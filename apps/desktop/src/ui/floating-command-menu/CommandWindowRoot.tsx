@@ -637,7 +637,7 @@ export function CommandWindowRoot() {
         return emptyPolicyApprovals();
       }
       if (confirmation.kind === "forbidden") {
-        throw new Error(formatPolicyBlockMessage(confirmation.decisions));
+        throw new Error(formatPolicyBlockMessage(confirmation.decisions, t));
       }
 
       return new Promise((resolve, reject) => {
@@ -649,7 +649,7 @@ export function CommandWindowRoot() {
         });
       });
     },
-    [],
+    [t],
   );
 
   const approvePolicyDialog = useCallback(() => {
@@ -754,7 +754,7 @@ export function CommandWindowRoot() {
           runtimeEnvironmentKind: "nodejs",
           version: version.version,
         },
-        `Install Node.js Toolchain ${version.version}`,
+        t("policy.dialog.installNodeToolchain", { version: version.version }),
       );
       setReleaseStatus({
         kind: "installing-toolchain",
@@ -806,7 +806,7 @@ export function CommandWindowRoot() {
           includeAiContinuation: input.includeAiContinuation,
           selectedPluginPacks: [],
         },
-        `Publish ${input.appName}`,
+        t("policy.dialog.publishApp", { name: input.appName }),
       );
       const job = await startAppReleaseJob(
         buildAppReleasePayload({
@@ -940,7 +940,7 @@ export function CommandWindowRoot() {
 
       const policyApprovals = await requestPolicyApprovals(
         { scope: "capsule-import", capsulePath: inputPath },
-        "Import app capsule",
+        t("policy.dialog.importCapsule"),
       );
       setCapsuleStatus({ kind: "importing" });
       await importAppCapsule(inputPath, policyApprovals);
@@ -989,7 +989,7 @@ export function CommandWindowRoot() {
           capsuleName: `${deepLinkPreflight.app.name} v${deepLinkPreflight.version.version}`,
           permissionSummary: deepLinkPreflight.permissionSummary,
         },
-        "Install shared app capsule",
+        t("policy.dialog.installSharedCapsule"),
       );
       const result = await installAppFromDeepLink(deepLinkValue, "dev", policyApprovals);
       refreshWorkspaces();
@@ -1102,7 +1102,7 @@ export function CommandWindowRoot() {
     try {
       const policyApprovals = await requestPolicyApprovals(
         { scope: "agent-install", agentId },
-        `Install ${status.catalog.label}`,
+        t("policy.dialog.installAgent", { label: status.catalog.label }),
       );
       const updated = await startAgentInstall(agentId, policyApprovals);
       setAgentInstallStatuses((current) =>
@@ -1139,7 +1139,10 @@ export function CommandWindowRoot() {
           runtimeEnvironmentKind: status.catalog.kind,
           version: version.version,
         },
-        `Install ${status.catalog.label} ${version.version}`,
+        t("policy.dialog.installRuntimeEnvironment", {
+          label: status.catalog.label,
+          version: version.version,
+        }),
       );
       const updated = await startRuntimeEnvironmentInstall(
         status.catalog.kind,
@@ -1322,7 +1325,7 @@ export function CommandWindowRoot() {
 
       const policyApprovals = await requestPolicyApprovals(
         { scope: "runtime-build", runtimeKind, mode: "dev", agentId },
-        `Run ${runtimeKind}`,
+        t("policy.dialog.runRuntime", { runtimeKind }),
       );
 
       setShellState("Planning");
@@ -1387,7 +1390,7 @@ export function CommandWindowRoot() {
 
       const policyApprovals = await requestPolicyApprovals(
         { scope: "runtime-build", runtimeKind: activeThread.runtimeKind, mode: activeThread.runtimeMode, agentId: activeThread.agentId },
-        `Continue ${activeThread.runtimeKind}`,
+        t("policy.dialog.continueRuntime", { runtimeKind: activeThread.runtimeKind }),
       );
       const thread = await continueBuildThread(activeThread.id, continuePrompt, policyApprovals);
       setBuildThreads((current) => upsertBuildThreadSummary(current, thread));

@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { createTranslator } from "@sofvary/i18n";
 import type { PolicyDecision } from "../../types";
 import {
   buildPolicyApprovalSet,
   emptyPolicyApprovals,
+  formatPolicyActionLabel,
   formatPolicyBlockMessage,
+  formatPolicyDecisionReasons,
+  formatPolicyDecisionRisks,
+  formatPolicyDecisionSummary,
+  formatPolicyDecisionTitle,
   summarizePolicyDecisions,
 } from "./policyLogic";
 
@@ -58,9 +64,15 @@ describe("policyLogic", () => {
       action: "runtime-environment-install",
       decision: "requires-confirmation",
       title: "Runtime environment install requires approval",
-      summary: "Sofvary is about to install Node.js.",
-      reasons: ["Managed runtime environments stay inside Sofvary data."],
-      risks: ["nodejs 24.16.0"],
+      summary: "Sofvary is about to install a managed runtime environment into application data.",
+      reasons: [
+        "Managed runtime environments stay inside the Sofvary data directory.",
+        "Sofvary will verify artifact hashes before activating sidecar executables.",
+        "This does not modify the system PATH or use a global package manager.",
+      ],
+      risks: [
+        "nodejs 24.16.0 for windows-x64 (edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56)",
+      ],
       subject:
         "runtime-env:nodejs:24.16.0:windows-x64:edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56",
     };
@@ -74,6 +86,38 @@ describe("policyLogic", () => {
         },
       ],
     });
+  });
+
+  it("localizes policy decision text for zh-CN", () => {
+    const t = createTranslator("zh-CN", "desktop");
+    const runtimeEnvironmentDecision: PolicyDecision = {
+      action: "runtime-environment-install",
+      decision: "requires-confirmation",
+      title: "Runtime environment install requires approval",
+      summary: "Sofvary is about to install a managed runtime environment into application data.",
+      reasons: [
+        "Managed runtime environments stay inside the Sofvary data directory.",
+        "Sofvary will verify artifact hashes before activating sidecar executables.",
+        "This does not modify the system PATH or use a global package manager.",
+      ],
+      risks: ["nodejs 24.16.0 for windows-x64 (sha256-value)"],
+      subject: "runtime-env:nodejs:24.16.0:windows-x64:sha256-value",
+    };
+
+    assert.equal(formatPolicyActionLabel(runtimeEnvironmentDecision.action, t), "运行环境安装");
+    assert.equal(formatPolicyDecisionTitle(runtimeEnvironmentDecision, t), "运行环境安装需要确认");
+    assert.equal(
+      formatPolicyDecisionSummary(runtimeEnvironmentDecision, t),
+      "Sofvary 将在应用数据目录中安装托管运行环境。",
+    );
+    assert.deepEqual(formatPolicyDecisionReasons(runtimeEnvironmentDecision, t), [
+      "托管运行环境会保留在 Sofvary 数据目录内。",
+      "Sofvary 会在启用 sidecar 可执行文件前校验 artifact hash。",
+      "此操作不会修改系统 PATH，也不会使用全局包管理器。",
+    ]);
+    assert.deepEqual(formatPolicyDecisionRisks(runtimeEnvironmentDecision, t), [
+      "nodejs 24.16.0 用于 windows-x64（sha256-value）",
+    ]);
   });
 
   it("prioritizes forbidden decisions", () => {
@@ -92,6 +136,24 @@ describe("policyLogic", () => {
     assert.equal(
       formatPolicyBlockMessage([forbidden]),
       "Command blocked: Global install is not allowed. Dependency changes can alter local app behavior.",
+    );
+  });
+
+  it("localizes forbidden policy block messages", () => {
+    const t = createTranslator("zh-CN", "desktop");
+    const forbidden: PolicyDecision = {
+      action: "command-execution",
+      decision: "forbidden",
+      title: "Command blocked",
+      summary: "Global package installation is forbidden by the Phase 22 command policy.",
+      reasons: ["Global installs can modify shared system or user tooling."],
+      risks: ["npm install -g example"],
+      subject: "npm install -g example",
+    };
+
+    assert.equal(
+      formatPolicyBlockMessage([forbidden], t),
+      "命令已阻止：Phase 22 命令策略禁止全局安装包。全局安装可能修改共享的系统或用户工具。",
     );
   });
 });

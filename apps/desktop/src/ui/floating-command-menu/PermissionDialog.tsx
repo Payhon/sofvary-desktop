@@ -1,3 +1,11 @@
+import {
+  formatPolicyActionLabel,
+  formatPolicyDecisionReasons,
+  formatPolicyDecisionRisks,
+  formatPolicyDecisionSummary,
+  formatPolicyDecisionTitle,
+  formatPolicyDialogTitle,
+} from "../../core/policy/policyLogic";
 import type { PolicyDecision } from "../../types";
 import { useDesktopLocale } from "../i18n/DesktopLocaleProvider";
 
@@ -15,10 +23,11 @@ export function PermissionDialog({
   onCancel,
 }: PermissionDialogProps) {
   const { t } = useDesktopLocale();
+  const dialogTitle = formatPolicyDialogTitle(title, t);
   return (
     <section
       className="permission-dialog"
-      aria-label={t("permission.aria", {}, "Sofvary security policy approval")}
+      aria-label={t("permission.aria")}
       role="dialog"
       aria-modal="true"
       data-no-drag
@@ -27,7 +36,7 @@ export function PermissionDialog({
         <header className="permission-dialog__header">
           <div>
             <span>{t("permission.title")}</span>
-            <h2>{title}</h2>
+            <h2>{dialogTitle}</h2>
           </div>
           <button type="button" aria-label={t("permission.cancelApproval")} onClick={onCancel}>
             X
@@ -35,30 +44,34 @@ export function PermissionDialog({
         </header>
 
         <div className="permission-dialog__body">
-          {decisions.map((decision) => (
-            <article key={`${decision.action}:${decision.subject ?? decision.title}`}>
-              <div className="permission-dialog__decision-heading">
-                <strong>{decision.title}</strong>
-                <small>{decision.action}</small>
-              </div>
-              <p>{decision.summary}</p>
-              {decision.subject ? <code>{decision.subject}</code> : null}
-              {decision.reasons.length > 0 ? (
-                <ul>
-                  {decision.reasons.map((reason) => (
-                    <li key={reason}>{reason}</li>
-                  ))}
-                </ul>
-              ) : null}
-              {decision.risks.length > 0 ? (
-                <div className="permission-dialog__risks">
-                  {decision.risks.map((risk) => (
-                    <span key={risk}>{risk}</span>
-                  ))}
+          {decisions.map((decision) => {
+            const reasons = formatPolicyDecisionReasons(decision, t);
+            const risks = formatPolicyDecisionRisks(decision, t);
+            return (
+              <article key={`${decision.action}:${decision.subject ?? decision.title}`}>
+                <div className="permission-dialog__decision-heading">
+                  <strong>{formatPolicyDecisionTitle(decision, t)}</strong>
+                  <small>{formatPolicyActionLabel(decision.action, t)}</small>
                 </div>
-              ) : null}
-            </article>
-          ))}
+                <p>{formatPolicyDecisionSummary(decision, t)}</p>
+                {decision.subject ? <code>{decision.subject}</code> : null}
+                {reasons.length > 0 ? (
+                  <ul>
+                    {reasons.map((reason, index) => (
+                      <li key={`${decision.action}:reason:${index}`}>{reason}</li>
+                    ))}
+                  </ul>
+                ) : null}
+                {risks.length > 0 ? (
+                  <div className="permission-dialog__risks">
+                    {risks.map((risk, index) => (
+                      <span key={`${decision.action}:risk:${index}`}>{risk}</span>
+                    ))}
+                  </div>
+                ) : null}
+              </article>
+            );
+          })}
         </div>
 
         <footer className="permission-dialog__actions">
