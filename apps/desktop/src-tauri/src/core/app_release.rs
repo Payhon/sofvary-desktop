@@ -5,6 +5,7 @@ use crate::core::published_app_packager::{
     PublishedAppNativeBundleInput, PublishedAppNativeBundleResult, PublishedAppPackageInput,
     PublishedAppPackageResult, PublishedAppPackagerError, PublishedAppStealthUiSettings,
 };
+use crate::core::runtime_environment::resolve_node_toolchain_with_adapter;
 use crate::core::workspace_manager::{WorkspaceError, WorkspaceManager};
 use crate::core::workspace_types::{RuntimeKind, SofvaryLockfile};
 use crate::platform::{current_adapter, OsKind, PlatformAdapter};
@@ -208,6 +209,7 @@ fn start_app_release_job_with_adapter_and_native_runner(
         plugin_packs: selected_plugins,
     });
     engine.enforce(decision, &payload.policy_approvals)?;
+    let pnpm_executable = resolve_packager_pnpm_executable(adapter)?;
 
     let result = create_published_app_package(PublishedAppPackageInput {
         manifest,
@@ -226,6 +228,7 @@ fn start_app_release_job_with_adapter_and_native_runner(
             output_dir: payload.output_dir.clone(),
             staging_dir: result.staging_dir.clone(),
             host_template_dir,
+            pnpm_executable,
             icon_path: payload.icon_path.clone(),
         },
         native_runner,
@@ -331,6 +334,17 @@ fn published_host_template_dir() -> AppReleaseResult<PathBuf> {
     Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("published-host"))
+}
+
+fn resolve_packager_pnpm_executable(adapter: &dyn PlatformAdapter) -> AppReleaseResult<PathBuf> {
+    let toolchain = resolve_node_toolchain_with_adapter(adapter).map_err(|error| {
+        AppReleaseError::Invalid(format!(
+            "Packager toolchain is missing Node.js/pnpm. Install Sofvary-managed Node.js Toolchain before publishing. {error}"
+        ))
+    })?;
+    toolchain.pnpm.executable.ok_or_else(|| {
+        AppReleaseError::Invalid("Packager toolchain did not report a pnpm executable.".to_string())
+    })
 }
 
 fn platform_label(platform: &str) -> &'static str {
@@ -489,11 +503,54 @@ mod tests {
         }
 
         fn resolve_sidecar_executable(&self, name: &str) -> PlatformResult<PathBuf> {
-            WindowsPlatformAdapter.resolve_sidecar_executable(name)
+            let file = match (name, self.os) {
+                ("node", OsKind::Windows) => "node.exe",
+                ("pnpm", OsKind::Windows) => "pnpm.cmd",
+                ("node", _) => "node",
+                ("pnpm", _) => "pnpm",
+                _ => {
+                    return Err(crate::platform::PlatformError::Unsupported(
+                        name.to_string(),
+                    ))
+                }
+            };
+            Ok(self
+                .dirs
+                .data_dir
+                .join("sidecars")
+                .join(match (self.os, self.arch()) {
+                    (OsKind::Windows, ArchKind::X64) => "windows-x64",
+                    (OsKind::Windows, ArchKind::Arm64) => "windows-arm64",
+                    (OsKind::Macos, ArchKind::X64) => "macos-x64",
+                    (OsKind::Macos, ArchKind::Arm64) => "macos-arm64",
+                    (OsKind::Linux, ArchKind::X64) => "linux-x64",
+                    (OsKind::Linux, ArchKind::Arm64) => "linux-arm64",
+                    _ => "unknown-unknown",
+                })
+                .join(file))
         }
 
         fn run_process(&self, spec: CommandSpec) -> PlatformResult<ProcessOutput> {
-            WindowsPlatformAdapter.run_process(spec)
+            let executable_name = spec
+                .executable
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            let stdout = if executable_name.contains("node") {
+                "v24.16.0\n"
+            } else if executable_name.contains("pnpm") {
+                "10.12.3\n"
+            } else {
+                return Err(crate::platform::PlatformError::InvalidPath(format!(
+                    "program not found: {}",
+                    spec.executable.display()
+                )));
+            };
+            Ok(ProcessOutput {
+                status_code: Some(0),
+                stdout: stdout.to_string(),
+                stderr: String::new(),
+            })
         }
 
         fn spawn_process(&self, spec: CommandSpec) -> PlatformResult<ProcessHandle> {

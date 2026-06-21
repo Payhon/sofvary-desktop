@@ -118,6 +118,7 @@ describe("releaseLogic", () => {
 
   it("formats release status transitions", () => {
     assert.equal(formatReleaseStatus({ kind: "idle" }), "Publishing ready.");
+    assert.equal(formatReleaseStatus({ kind: "installing-toolchain" }), "Installing packager toolchain.");
     assert.match(formatReleaseStatus({ kind: "publishing", targetName: "CRM" }), /Publishing CRM/);
     assert.equal(formatReleaseStatus({ kind: "error", detail: "boom" }), "boom");
   });

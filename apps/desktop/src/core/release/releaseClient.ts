@@ -6,6 +6,7 @@ import type {
   AppReleasePayload,
   AppReleaseTargetPlatform,
   PackagerToolchainStatus,
+  PolicyApprovalSet,
 } from "../../types";
 
 const ICON_FILTERS = [
@@ -22,9 +23,10 @@ export async function getPackagerToolchainStatus(): Promise<PackagerToolchainSta
 
 export async function startPackagerToolchainInstall(
   targetPlatform: AppReleaseTargetPlatform,
+  policyApprovals: PolicyApprovalSet,
 ): Promise<PackagerToolchainStatus> {
   return safeInvoke<PackagerToolchainStatus>("start_packager_toolchain_install", {
-    payload: { targetPlatform },
+    payload: { targetPlatform, policyApprovals },
   });
 }
 

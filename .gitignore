@@ -3,6 +3,7 @@ node_modules/
 dist/
 target/
 *.log
+tmp/
 
 apps/*/dist/
 apps/*/src-tauri/target/

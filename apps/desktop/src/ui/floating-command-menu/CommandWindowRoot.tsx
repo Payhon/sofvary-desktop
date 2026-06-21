@@ -124,6 +124,7 @@ import {
   startRuntimeEnvironmentInstall,
 } from "../../core/runtimeEnvironment/runtimeEnvironmentClient";
 import {
+  getDefaultRuntimeEnvironmentVersion,
   getRuntimeEnvironmentRequirementIssue,
   runtimeEnvironmentInstallKey,
   sortRuntimeEnvironmentStatuses,
@@ -334,6 +335,7 @@ export function CommandWindowRoot() {
     capsuleStatus.kind === "importing";
   const isReleaseBusy =
     releaseStatus.kind === "publishing" ||
+    releaseStatus.kind === "installing-toolchain" ||
     releaseStatus.kind === "checking-toolchain" ||
     releaseStatus.kind === "choosing-output";
   const isDeepLinkBusy = deepLinkStatus.kind === "reviewing" || deepLinkStatus.kind === "installing";
@@ -734,14 +736,44 @@ export function CommandWindowRoot() {
   };
 
   const installPackagerToolchain = async () => {
-    const targetPlatform = releaseCapabilities?.currentPlatform ?? "macos";
+    const targetPlatform = releaseCapabilities?.currentPlatform ?? packagerToolchainStatus?.platform ?? "windows";
     setReleaseStatus({ kind: "checking-toolchain" });
     try {
-      const status = await startPackagerToolchainInstall(targetPlatform);
+      const statuses = sortRuntimeEnvironmentStatuses(await getRuntimeEnvironmentStatuses());
+      setRuntimeEnvironmentStatuses(statuses);
+      const nodeStatus = statuses.find((status) => status.catalog.kind === "nodejs");
+      const version = nodeStatus ? getDefaultRuntimeEnvironmentVersion(nodeStatus) : null;
+      if (!nodeStatus || !version || !version.supported) {
+        throw new Error("Sofvary-managed Node/pnpm is not available for this platform yet.");
+      }
+      const installKey = runtimeEnvironmentInstallKey(nodeStatus, version);
+      setActiveRuntimeEnvironmentInstallKey(installKey);
+      const policyApprovals = await requestPolicyApprovals(
+        {
+          scope: "runtime-environment-install",
+          runtimeEnvironmentKind: "nodejs",
+          version: version.version,
+        },
+        `Install Node.js Toolchain ${version.version}`,
+      );
+      setReleaseStatus({
+        kind: "installing-toolchain",
+        detail: `Installing Sofvary-managed Node.js ${version.version} and pnpm support.`,
+      });
+      const status = await startPackagerToolchainInstall(targetPlatform, policyApprovals);
       setPackagerToolchainStatus(status);
       setReleaseStatus({ kind: "ready", detail: status.detail });
+      refreshRuntimeEnvironments();
+      refreshAgents();
+      refreshAgentInstalls();
     } catch (error) {
-      setReleaseStatus({ kind: "error", detail: error instanceof Error ? error.message : String(error) });
+      if (error instanceof Error && error.message === POLICY_APPROVAL_CANCELED) {
+        setReleaseStatus({ kind: "ready", detail: "Packager toolchain install canceled." });
+      } else {
+        setReleaseStatus({ kind: "error", detail: error instanceof Error ? error.message : String(error) });
+      }
+    } finally {
+      setActiveRuntimeEnvironmentInstallKey(null);
     }
   };
 

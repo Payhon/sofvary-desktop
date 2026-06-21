@@ -13,6 +13,7 @@ export type ReleaseStatusKind =
   | "idle"
   | "choosing-output"
   | "checking-toolchain"
+  | "installing-toolchain"
   | "ready"
   | "publishing"
   | "success"
@@ -171,6 +172,8 @@ export function formatReleaseStatus(state: ReleaseStatusState): string {
       return `Choose output folder${target}.`;
     case "checking-toolchain":
       return "Checking packager toolchain.";
+    case "installing-toolchain":
+      return state.detail ?? "Installing packager toolchain.";
     case "ready":
       return state.detail ?? "Release form is ready.";
     case "publishing":

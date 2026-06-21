@@ -37,6 +37,7 @@ const GENERATED_ICON_FILES: [&str; 5] = [
     "icon.icns",
     "icon.ico",
 ];
+const RELEASE_RESOURCES_TARGET_DIR: &str = "target/sofvary-release-resources";
 
 #[derive(Debug, Clone)]
 pub struct PublishedAppPackageInput {
@@ -119,6 +120,7 @@ pub struct PublishedAppNativeBundleInput {
     pub output_dir: PathBuf,
     pub staging_dir: PathBuf,
     pub host_template_dir: PathBuf,
+    pub pnpm_executable: PathBuf,
     pub icon_path: Option<PathBuf>,
 }
 
@@ -267,7 +269,8 @@ pub fn create_native_published_app_bundle(
         .staging_dir
         .join(format!("{safe_name}-tauri.release.conf.json"));
     let icon_paths = prepare_native_icon_paths(&input, runner)?;
-    write_native_tauri_config(&input, &config_path, &icon_paths)?;
+    let release_resources_source = prepare_native_release_resources(&input, &safe_name)?;
+    write_native_tauri_config(&input, &config_path, &icon_paths, &release_resources_source)?;
 
     let bundle_root = input
         .host_template_dir
@@ -277,6 +280,14 @@ pub fn create_native_published_app_bundle(
         .join("bundle");
     if bundle_root.exists() {
         fs::remove_dir_all(&bundle_root)?;
+    }
+
+    let host_build_output = runner.run(native_host_build_spec(&input))?;
+    if host_build_output.status_code != Some(0) {
+        return Err(PublishedAppPackagerError::Invalid(format!(
+            "published host frontend build failed: {}",
+            summarize_process_output(&host_build_output)
+        )));
     }
 
     let output = runner.run(native_tauri_build_spec(&input, &config_path)?)?;
@@ -485,11 +496,11 @@ fn write_native_tauri_config(
     input: &PublishedAppNativeBundleInput,
     config_path: &Path,
     icon_paths: &[String],
+    release_resources_source: &str,
 ) -> PublishedAppPackagerResult<()> {
-    let release_resource_source = format!("{}/", input.staging_dir.display());
     let mut resources = Map::new();
     resources.insert(
-        release_resource_source,
+        release_resources_source.to_string(),
         Value::String("release-resources".to_string()),
     );
     let mut bundle = json!({
@@ -502,6 +513,10 @@ fn write_native_tauri_config(
     let config = json!({
         "productName": input.app_name,
         "identifier": release_identifier(&input.app_name),
+        "build": {
+            "beforeBuildCommand": "",
+            "frontendDist": "../dist"
+        },
         "app": {
             "security": {
                 "csp": PUBLISHED_HOST_CSP
@@ -523,6 +538,20 @@ fn write_native_tauri_config(
     });
     fs::write(config_path, serde_json::to_string_pretty(&config)? + "\n")?;
     Ok(())
+}
+
+fn prepare_native_release_resources(
+    input: &PublishedAppNativeBundleInput,
+    safe_name: &str,
+) -> PublishedAppPackagerResult<String> {
+    let relative = format!("{RELEASE_RESOURCES_TARGET_DIR}/{safe_name}");
+    let target = input.host_template_dir.join("src-tauri").join(&relative);
+    if target.exists() {
+        fs::remove_dir_all(&target)?;
+    }
+    fs::create_dir_all(&target)?;
+    copy_dir_filtered(&input.staging_dir, &target, &input.staging_dir)?;
+    Ok(format!("{relative}/"))
 }
 
 fn release_identifier(app_name: &str) -> String {
@@ -551,7 +580,7 @@ fn native_tauri_icon_spec(
             PublishedAppPackagerError::Invalid("icon output path escaped host template".to_string())
         })?;
     Ok(CommandSpec {
-        executable: PathBuf::from("pnpm"),
+        executable: input.pnpm_executable.clone(),
         args: vec![
             "tauri".to_string(),
             "icon".to_string(),
@@ -567,13 +596,25 @@ fn native_tauri_icon_spec(
     })
 }
 
+fn native_host_build_spec(input: &PublishedAppNativeBundleInput) -> CommandSpec {
+    CommandSpec {
+        executable: input.pnpm_executable.clone(),
+        args: vec!["build".to_string()],
+        cwd: input.host_template_dir.clone(),
+        env: HashMap::new(),
+        allowed_network: false,
+        timeout_ms: Some(5 * 60 * 1000),
+        kill_on_drop: true,
+    }
+}
+
 fn native_tauri_build_spec(
     input: &PublishedAppNativeBundleInput,
     config_path: &Path,
 ) -> PublishedAppPackagerResult<CommandSpec> {
     let bundle_target = native_bundle_target(&input.target_platform)?;
     Ok(CommandSpec {
-        executable: PathBuf::from("pnpm"),
+        executable: input.pnpm_executable.clone(),
         args: vec![
             "tauri".to_string(),
             "build".to_string(),
@@ -753,15 +794,39 @@ fn file_name(path: &Path) -> PublishedAppPackagerResult<&OsStr> {
 }
 
 fn summarize_process_output(output: &ProcessOutput) -> String {
-    let stderr = output.stderr.trim();
-    if !stderr.is_empty() {
-        return stderr.lines().next().unwrap_or(stderr).to_string();
+    let lines = output
+        .stderr
+        .lines()
+        .chain(output.stdout.lines())
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        return "process failed without output".to_string();
     }
-    let stdout = output.stdout.trim();
-    if !stdout.is_empty() {
-        return stdout.lines().next().unwrap_or(stdout).to_string();
+
+    let start = lines
+        .iter()
+        .position(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.contains("error")
+                || lower.contains("failed")
+                || lower.contains("doesn't exist")
+                || lower.contains("not found")
+        })
+        .unwrap_or(0);
+    let summary = lines
+        .iter()
+        .skip(start)
+        .take(6)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if summary.chars().count() > 900 {
+        format!("{}...", summary.chars().take(900).collect::<String>())
+    } else {
+        summary
     }
-    "process failed without output".to_string()
 }
 
 fn validate_output_dir(path: &Path) -> PublishedAppPackagerResult<()> {
@@ -1055,7 +1120,8 @@ mod tests {
                 target_platform: "macos".to_string(),
                 output_dir: output_dir.clone(),
                 staging_dir,
-                host_template_dir,
+                host_template_dir: host_template_dir.clone(),
+                pnpm_executable: PathBuf::from("pnpm"),
                 icon_path: None,
             },
             &runner,
@@ -1063,25 +1129,40 @@ mod tests {
         .expect("native bundle");
 
         let command = runner.commands.borrow();
-        assert_eq!(command.len(), 1);
+        assert_eq!(command.len(), 2);
         assert_eq!(command[0].executable, PathBuf::from("pnpm"));
+        assert_eq!(command[0].args, ["build"].map(String::from));
+        assert_eq!(command[1].executable, PathBuf::from("pnpm"));
         assert_eq!(
-            command[0].args,
+            command[1].args,
             ["tauri", "build", "--bundles", "app,dmg", "--ci", "--config"]
                 .map(String::from)
                 .into_iter()
-                .chain(std::iter::once(command[0].args[6].clone()))
+                .chain(std::iter::once(command[1].args[6].clone()))
                 .collect::<Vec<_>>()
         );
         assert!(!command[0].allowed_network);
-        let generated_config = fs::read_to_string(&command[0].args[6]).expect("generated config");
+        assert!(!command[1].allowed_network);
+        let generated_config = fs::read_to_string(&command[1].args[6]).expect("generated config");
         let generated_config: Value = serde_json::from_str(&generated_config).expect("config json");
+        assert_eq!(
+            generated_config.pointer("/build/beforeBuildCommand"),
+            Some(&Value::String(String::new()))
+        );
         let csp = generated_config
             .pointer("/app/security/csp")
             .and_then(|value| value.as_str())
             .expect("csp");
         assert!(csp.contains("frame-src http://127.0.0.1:*"));
         assert!(csp.contains("child-src http://127.0.0.1:*"));
+        let resources = generated_config
+            .pointer("/bundle/resources")
+            .and_then(|value| value.as_object())
+            .expect("resources");
+        assert!(resources.contains_key("target/sofvary-release-resources/customer-crm/"));
+        assert!(host_template_dir
+            .join("src-tauri/target/sofvary-release-resources/customer-crm/published-app.json")
+            .exists());
 
         let app_path = result.app_bundle_path.expect("app bundle");
         let dmg_path = result.installer_path.expect("dmg");
@@ -1111,6 +1192,7 @@ mod tests {
                 output_dir,
                 staging_dir,
                 host_template_dir,
+                pnpm_executable: PathBuf::from("pnpm"),
                 icon_path: Some(icon_path.clone()),
             },
             &runner,
@@ -1118,7 +1200,7 @@ mod tests {
         .expect("native bundle");
 
         let commands = runner.commands.borrow();
-        assert_eq!(commands.len(), 2);
+        assert_eq!(commands.len(), 3);
         assert_eq!(
             commands[0].args,
             vec![
@@ -1163,6 +1245,7 @@ mod tests {
                 output_dir,
                 staging_dir,
                 host_template_dir,
+                pnpm_executable: PathBuf::from("pnpm"),
                 icon_path: Some(icon_path),
             },
             &runner,
@@ -1195,6 +1278,7 @@ mod tests {
                 output_dir,
                 staging_dir,
                 host_template_dir,
+                pnpm_executable: PathBuf::from("pnpm"),
                 icon_path: Some(icon_path),
             },
             &runner,
@@ -1225,6 +1309,7 @@ mod tests {
                 output_dir,
                 staging_dir,
                 host_template_dir,
+                pnpm_executable: PathBuf::from("pnpm"),
                 icon_path: None,
             },
             &runner,
@@ -1234,6 +1319,20 @@ mod tests {
         assert!(error
             .to_string()
             .contains("native macOS bundle was not produced"));
+    }
+
+    #[test]
+    fn process_summary_prefers_actionable_error_lines() {
+        let output = ProcessOutput {
+            status_code: Some(1),
+            stdout: "Info Looking up installed tauri packages\nresource path `/Users/payhon/tmp` doesn't exist\nfailed to build app\n".to_string(),
+            stderr: String::new(),
+        };
+
+        let summary = summarize_process_output(&output);
+
+        assert!(summary.contains("resource path"));
+        assert!(!summary.starts_with("Info Looking up"));
     }
 
     fn write_minimal_host_template(root: &Path) {
@@ -1290,7 +1389,7 @@ mod tests {
                         fs::write(icon_root.join(file_name), "icon").expect("generated icon");
                     }
                 }
-            } else if self.create_outputs {
+            } else if spec.args.get(1).map(String::as_str) == Some("build") && self.create_outputs {
                 let bundle_root = spec.cwd.join("src-tauri/target/release/bundle");
                 let app_dir = bundle_root.join("macos/Customer CRM.app");
                 fs::create_dir_all(&app_dir).expect("app bundle");
