@@ -5,8 +5,6 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-pub const SOFVARY_CONTEXT_MCP_ID: &str = "sofvary-context";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SofvaryAgentContext {
@@ -41,32 +39,6 @@ impl SofvaryAgentContext {
     pub fn with_diagnostics(mut self, diagnostics: Vec<RuntimeDiagnostic>) -> Self {
         self.diagnostics = diagnostics;
         self
-    }
-
-    pub fn mcp_server_descriptor(&self) -> Value {
-        json!({
-            "name": SOFVARY_CONTEXT_MCP_ID,
-            "transport": "embedded-readonly",
-            "scope": {
-                "taskId": self.task_id,
-                "workspaceRoot": self.workspace_root.display().to_string(),
-                "stagingRoot": self.staging_root.display().to_string(),
-                "runtimeKind": self.runtime_kind,
-                "envelopeId": self.envelope_id
-            },
-            "tools": [
-                "get_task_state",
-                "get_runtime_diagnostics",
-                "list_generated_files",
-                "get_workspace_manifest"
-            ],
-            "permissions": {
-                "readOnly": true,
-                "workspaceScoped": true,
-                "commands": false,
-                "writes": false
-            }
-        })
     }
 
     pub fn get_task_state(&self) -> Value {
@@ -119,8 +91,10 @@ impl SofvaryAgentContext {
     }
 }
 
-pub fn acp_mcp_servers_for_context(context: &SofvaryAgentContext) -> Value {
-    json!([context.mcp_server_descriptor()])
+pub fn acp_mcp_servers_for_context(_context: &SofvaryAgentContext) -> Value {
+    // This context is currently process-local. ACP mcpServers must describe a
+    // concrete server transport, so do not advertise the internal descriptor.
+    json!([])
 }
 
 fn collect_files(root: &Path, current: &Path, files: &mut Vec<String>) -> Result<(), String> {
@@ -169,7 +143,7 @@ mod tests {
     use crate::core::harness_engine::PromptEnvelope;
 
     #[test]
-    fn descriptor_exposes_only_readonly_context_tools() {
+    fn acp_mcp_servers_omit_internal_context_descriptor() {
         let temp = tempfile::tempdir().expect("tempdir");
         let envelope = test_envelope();
         let context = SofvaryAgentContext::for_acp_session(
@@ -179,16 +153,9 @@ mod tests {
             &envelope,
         );
 
-        let descriptor = context.mcp_server_descriptor();
+        let servers = acp_mcp_servers_for_context(&context);
 
-        assert_eq!(descriptor["name"], SOFVARY_CONTEXT_MCP_ID);
-        assert_eq!(descriptor["permissions"]["readOnly"], true);
-        assert_eq!(descriptor["permissions"]["commands"], false);
-        assert!(descriptor["tools"]
-            .as_array()
-            .expect("tools")
-            .iter()
-            .any(|tool| tool == "get_runtime_diagnostics"));
+        assert_eq!(servers, json!([]));
     }
 
     #[test]

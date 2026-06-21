@@ -102,14 +102,7 @@ pub fn run_acp_agent(request: AcpRunRequest<'_>) -> Result<AcpRunOutput, AgentGa
         &mut process,
         1,
         "session/new",
-        json!({
-            "cwd": request.workspace_root.display().to_string(),
-            "mcpServers": session
-                .context
-                .as_ref()
-                .map(acp_mcp_servers_for_context)
-                .unwrap_or_else(|| json!([]))
-        }),
+        acp_session_new_params(request.workspace_root, session.context.as_ref()),
     )?;
     let new_session = read_until_response(&mut process, 1, &mut session, timeout)?;
     let session_id = new_session
@@ -127,7 +120,11 @@ pub fn run_acp_agent(request: AcpRunRequest<'_>) -> Result<AcpRunOutput, AgentGa
             "prompt": [
                 {
                     "type": "text",
-                    "text": build_acp_prompt(request.envelope, request.staging_root)
+                    "text": build_acp_prompt(
+                        request.envelope,
+                        request.staging_root,
+                        request.diagnostics
+                    )
                 }
             ]
         }),
@@ -259,14 +256,7 @@ fn test_acp_session_new(
         process,
         1,
         "session/new",
-        json!({
-            "cwd": session.workspace_root.display().to_string(),
-            "mcpServers": session
-                .context
-                .as_ref()
-                .map(acp_mcp_servers_for_context)
-                .unwrap_or_else(|| json!([]))
-        }),
+        acp_session_new_params(&session.workspace_root, session.context.as_ref()),
     )?;
     let new_session = read_until_response(process, 1, session, Duration::from_secs(30))?;
     new_session
@@ -532,8 +522,31 @@ fn normalize_relative(path: &Path) -> Result<String, String> {
     Ok(parts.join("/"))
 }
 
-fn build_acp_prompt(envelope: &PromptEnvelope, staging_root: &Path) -> String {
+fn acp_session_new_params(workspace_root: &Path, context: Option<&SofvaryAgentContext>) -> Value {
+    json!({
+        "cwd": workspace_root.display().to_string(),
+        "mcpServers": context
+            .map(acp_mcp_servers_for_context)
+            .unwrap_or_else(|| json!([]))
+    })
+}
+
+fn build_acp_prompt(
+    envelope: &PromptEnvelope,
+    staging_root: &Path,
+    diagnostics: &[RuntimeDiagnostic],
+) -> String {
     let envelope_json = serde_json::to_string_pretty(envelope).unwrap_or_else(|_| "{}".to_string());
+    let diagnostics_section = if diagnostics.is_empty() {
+        String::new()
+    } else {
+        let diagnostics_json =
+            serde_json::to_string_pretty(diagnostics).unwrap_or_else(|_| "[]".to_string());
+        format!(
+            "Runtime diagnostics from the previous run:\n{}\n",
+            diagnostics_json
+        )
+    };
     let absolute_targets = envelope
         .output_contract
         .files
@@ -542,10 +555,11 @@ fn build_acp_prompt(envelope: &PromptEnvelope, staging_root: &Path) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "You are generating a Sofvary app. First try to write every required output file through ACP fs/write_text_file using these exact absolute paths:\n{}\nIf ACP fs/write_text_file is not available to you, return exactly one JSON object and no markdown with this shape: {{\"files\":[{{\"relativePath\":\"index.html\",\"contents\":\"...\"}}]}}.\nRequired relative files: {}.\nReturn only after all files are written or after the JSON object is complete. Do not write outside this staging root: {}. Do not include Sofvary shell UI in generated app source.\nPromptEnvelope:\n{}",
+        "You are generating a Sofvary app. First try to write every required output file through ACP fs/write_text_file using these exact absolute paths:\n{}\nIf ACP fs/write_text_file is not available to you, return exactly one JSON object and no markdown with this shape: {{\"files\":[{{\"relativePath\":\"index.html\",\"contents\":\"...\"}}]}}.\nRequired relative files: {}.\nReturn only after all files are written or after the JSON object is complete. Do not write outside this staging root: {}. Do not include Sofvary shell UI in generated app source.\n{}PromptEnvelope:\n{}",
         absolute_targets,
         envelope.output_contract.files.join(", "),
         staging_root.display(),
+        diagnostics_section,
         envelope_json
     )
 }
@@ -654,5 +668,27 @@ mod tests {
         );
 
         assert_eq!(session.agent_text, "{\"files\":[]}");
+    }
+
+    #[test]
+    fn session_new_params_do_not_send_internal_mcp_descriptor() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let envelope: PromptEnvelope = serde_json::from_str(include_str!(
+            "../../../../../packages/harness-compiler/fixtures/react-vite-prompt-envelope.golden.json"
+        ))
+        .expect("fixture");
+        let context = SofvaryAgentContext::for_acp_session(
+            "task-a",
+            temp.path(),
+            &temp.path().join("generated"),
+            &envelope,
+        );
+
+        let params = acp_session_new_params(temp.path(), Some(&context));
+        let serialized = serde_json::to_string(&params).expect("params");
+
+        assert_eq!(params["cwd"], temp.path().display().to_string());
+        assert_eq!(params["mcpServers"], json!([]));
+        assert!(!serialized.contains("embedded-readonly"));
     }
 }
