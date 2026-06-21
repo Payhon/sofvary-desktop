@@ -26,7 +26,10 @@ describe("@sofvary/i18n", () => {
   });
 
   it("translates namespaced keys and interpolates params", () => {
-    assert.equal(translate("home.catalogCopy", "en", { appCount: 4, packCount: 10 }, "web"), "Phase17 keeps the product surface narrow: 4 mock app records, 10 pack records, and no real account or artifact behavior.");
+    assert.equal(
+      translate("home.catalogCopy", "en", { appCount: 4, packCount: 10 }, "web"),
+      "Browse 4 starter capsules and 10 pack references that show how intent becomes local, inspectable software.",
+    );
     assert.equal(translate("validation.required", "zh-CN", { field: "email" }, "api"), "email 必填");
     const t = createTranslator("zh-CN", "desktop");
     assert.equal(t("build.status.planning"), "正在分析意图");
