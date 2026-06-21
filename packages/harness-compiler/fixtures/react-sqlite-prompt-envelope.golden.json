@@ -1,0 +1,127 @@
+{
+  "schemaVersion": "1.0",
+  "envelopeId": "penv_react_sqlite_golden",
+  "createdAt": "2026-06-02T00:00:00.000Z",
+  "boxRuntimeContext": {
+    "runtimePack": {
+      "id": "sofvary.runtime.react-sqlite",
+      "version": "0.1.0"
+    },
+    "harnessPacks": [
+      {
+        "id": "sofvary.harness.react-sqlite",
+        "version": "0.1.0"
+      }
+    ],
+    "runtimeKind": "react-sqlite",
+    "generatedRoot": "generated",
+    "entrypoint": "react/src/main.tsx",
+    "bind": "127.0.0.1",
+    "network": "local-only"
+  },
+  "userIntent": "Build a local customer manager",
+  "currentAppState": {
+    "appId": "app_test",
+    "workspaceName": "Timer",
+    "mode": "create",
+    "existingFiles": [],
+    "previewState": "empty"
+  },
+  "runtimePolicy": {
+    "runtimeKind": "react-sqlite",
+    "allowedEntrypoints": ["react/src/main.tsx"],
+    "allowedServerBind": "127.0.0.1",
+    "network": "local-only",
+    "packageInstall": false
+  },
+  "harnessPolicy": {
+    "systemInstructions": [
+      "Generate a React + Vite frontend, Node local API, and workspace-local SQLite persistence.",
+      "Frontend code must call /api/* endpoints only and must never import SQLite, sql.js, database files, or filesystem modules."
+    ],
+    "fileSystemRules": [
+      "Write React and Node API files only inside generated/react.",
+      "Write schema, migrations, seed data, and app.sqlite only inside generated/data.",
+      "Do not read or write paths outside the active Sofvary workspace.",
+      "Do not create files outside the React + SQLite output contract."
+    ],
+    "outputRules": [
+      "The frontend calls /api/health and /api/customers through relative /api/* URLs.",
+      "The Node API binds to 127.0.0.1 only and owns every SQLite operation.",
+      "SQL statements use prepared statements for user-controlled values.",
+      "The SQLite database file stays at generated/data/app.sqlite.",
+      "Keep Sofvary shell UI out of generated app source.",
+      "The generated app must be exportable without Sofvary floating menu or build overlay UI."
+    ],
+    "blockedCapabilities": [
+      "cdn-assets",
+      "cloud-service",
+      "direct-frontend-sqlite-access",
+      "electron-runtime",
+      "external-ui-framework",
+      "nextjs-runtime",
+      "plugin-execution",
+      "remote-database",
+      "remote-network",
+      "sensitive-credentials",
+      "shell-command",
+      "sofvary-shell-ui"
+    ]
+  },
+  "fileSystemPolicy": {
+    "root": "generated",
+    "allowedFiles": [
+      "react/package.json",
+      "react/index.html",
+      "react/vite.config.ts",
+      "react/tsconfig.json",
+      "react/src/main.tsx",
+      "react/src/App.tsx",
+      "react/src/components/CustomerManager.tsx",
+      "react/src/styles/app.css",
+      "react/server/index.ts",
+      "react/server/db.ts",
+      "react/server/routes/customers.ts",
+      "data/schema.json",
+      "data/migrations/001_create_customers.sql",
+      "data/seed.sql"
+    ],
+    "allowExternalFiles": false,
+    "allowPathTraversal": false
+  },
+  "commandPolicy": {
+    "allowShell": false,
+    "allowPackageInstall": false,
+    "allowGlobalInstall": false,
+    "allowedCommands": []
+  },
+  "outputContract": {
+    "format": "react-sqlite-project",
+    "files": [
+      "react/package.json",
+      "react/index.html",
+      "react/vite.config.ts",
+      "react/tsconfig.json",
+      "react/src/main.tsx",
+      "react/src/App.tsx",
+      "react/src/components/CustomerManager.tsx",
+      "react/src/styles/app.css",
+      "react/server/index.ts",
+      "react/server/db.ts",
+      "react/server/routes/customers.ts",
+      "data/schema.json",
+      "data/migrations/001_create_customers.sql",
+      "data/seed.sql"
+    ],
+    "shellUiIncluded": false
+  },
+  "acceptanceCriteria": [
+    "Generated output contains exactly the React + SQLite project file set.",
+    "Frontend code calls /api/* endpoints and does not import or open SQLite directly.",
+    "Node local API owns SQLite access and binds to 127.0.0.1 only.",
+    "SQLite database file is stored inside generated/data/app.sqlite.",
+    "Every user-controlled SQL value is passed through parameterized statements.",
+    "Generated app uses no remote database, cloud service, sensitive credentials, external CDN, or Sofvary shell UI.",
+    "Harness sofvary.harness.react-sqlite@0.1.0 constraints are represented in the prompt envelope."
+  ]
+}

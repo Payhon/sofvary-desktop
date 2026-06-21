@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default desktop window permissions.","local":true,"windows":["main","command","glyph"],"permissions":["core:default","core:window:allow-set-shadow","core:window:allow-start-dragging","dialog:allow-open","dialog:allow-save"]}}

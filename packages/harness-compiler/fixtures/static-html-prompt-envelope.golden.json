@@ -1,0 +1,87 @@
+{
+  "schemaVersion": "1.0",
+  "envelopeId": "penv_golden",
+  "createdAt": "2026-05-28T00:00:00.000Z",
+  "boxRuntimeContext": {
+    "runtimePack": {
+      "id": "sofvary.runtime.static-html",
+      "version": "0.1.0"
+    },
+    "harnessPacks": [
+      {
+        "id": "sofvary.harness.static-html",
+        "version": "0.1.0"
+      }
+    ],
+    "runtimeKind": "static-html",
+    "generatedRoot": "generated/static",
+    "entrypoint": "index.html",
+    "bind": "127.0.0.1",
+    "network": "local-only"
+  },
+  "userIntent": "Build a tiny timer",
+  "currentAppState": {
+    "appId": "app_test",
+    "workspaceName": "Timer",
+    "mode": "create",
+    "existingFiles": [],
+    "previewState": "empty"
+  },
+  "runtimePolicy": {
+    "runtimeKind": "static-html",
+    "allowedEntrypoints": ["index.html"],
+    "allowedServerBind": "127.0.0.1",
+    "network": "local-only",
+    "packageInstall": false
+  },
+  "harnessPolicy": {
+    "systemInstructions": [
+      "Generate a self-contained static app using index.html, style.css, and app.js.",
+      "Do not require npm, CDNs, remote scripts, external assets, React, SQLite, or plugin execution."
+    ],
+    "fileSystemRules": [
+      "Write only inside generated/static for this runtime.",
+      "Do not read or write paths outside the active Sofvary workspace.",
+      "Do not create files other than index.html, style.css, and app.js.",
+      "Use localStorage only for small local preferences."
+    ],
+    "outputRules": [
+      "Keep Sofvary shell UI out of generated app source.",
+      "The app must run through the local static preview server.",
+      "The generated app must be exportable without Sofvary floating menu or build overlay UI."
+    ],
+    "blockedCapabilities": [
+      "cdn-assets",
+      "npm-package-install",
+      "plugin-execution",
+      "react-runtime",
+      "remote-network",
+      "shell-command",
+      "sofvary-shell-ui",
+      "sqlite-runtime"
+    ]
+  },
+  "fileSystemPolicy": {
+    "root": "generated/static",
+    "allowedFiles": ["index.html", "style.css", "app.js"],
+    "allowExternalFiles": false,
+    "allowPathTraversal": false
+  },
+  "commandPolicy": {
+    "allowShell": false,
+    "allowPackageInstall": false,
+    "allowGlobalInstall": false,
+    "allowedCommands": []
+  },
+  "outputContract": {
+    "format": "static-html-files",
+    "files": ["index.html", "style.css", "app.js"],
+    "shellUiIncluded": false
+  },
+  "acceptanceCriteria": [
+    "Generated output contains exactly index.html, style.css, and app.js.",
+    "Generated app does not include Sofvary shell UI, floating menu, build overlay, or host controls.",
+    "Generated app runs through the local static preview server without network downloads.",
+    "Harness sofvary.harness.static-html@0.1.0 constraints are represented in the prompt envelope."
+  ]
+}

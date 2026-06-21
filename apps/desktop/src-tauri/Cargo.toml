@@ -1,0 +1,36 @@
+[package]
+name = "sofvary-desktop"
+version = "0.1.0"
+description = "Sofvary desktop client"
+authors = ["Sofvary"]
+edition = "2021"
+
+[lib]
+name = "sofvary_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.1", features = [] }
+
+[dependencies]
+chrono = { version = "0.4.42", features = ["serde"] }
+base64 = "0.22.1"
+flate2 = "1.1.5"
+html-escape = "0.2.13"
+httpdate = "1.0.3"
+libc = "0.2"
+local-ip-address = "0.6.5"
+mime_guess = "2.0.5"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+sha2 = "0.10.9"
+tauri = { version = "2.9.5", features = ["macos-private-api", "tray-icon"] }
+tauri-plugin-dialog = "2.4.0"
+tauri-plugin-global-shortcut = "2.3.1"
+tempfile = "3.23.0"
+thiserror = "2.0.17"
+uuid = { version = "1.19.0", features = ["v4", "serde"] }
+ureq = "3.3.0"
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]

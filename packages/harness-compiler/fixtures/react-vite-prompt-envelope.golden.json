@@ -1,0 +1,110 @@
+{
+  "schemaVersion": "1.0",
+  "envelopeId": "penv_react_golden",
+  "createdAt": "2026-06-02T00:00:00.000Z",
+  "boxRuntimeContext": {
+    "runtimePack": {
+      "id": "sofvary.runtime.react-vite",
+      "version": "0.1.0"
+    },
+    "harnessPacks": [
+      {
+        "id": "sofvary.harness.react-vite",
+        "version": "0.1.0"
+      }
+    ],
+    "runtimeKind": "react-vite",
+    "generatedRoot": "generated/react",
+    "entrypoint": "src/main.tsx",
+    "bind": "127.0.0.1",
+    "network": "local-only"
+  },
+  "userIntent": "Build a task board",
+  "currentAppState": {
+    "appId": "app_test",
+    "workspaceName": "Timer",
+    "mode": "create",
+    "existingFiles": [],
+    "previewState": "empty"
+  },
+  "runtimePolicy": {
+    "runtimeKind": "react-vite",
+    "allowedEntrypoints": ["src/main.tsx"],
+    "allowedServerBind": "127.0.0.1",
+    "network": "local-only",
+    "packageInstall": false
+  },
+  "harnessPolicy": {
+    "systemInstructions": [
+      "Generate a React + Vite app using React function components and TypeScript.",
+      "Do not use Next.js, Electron, external CDNs, remote assets, SQLite, plugin execution, or a default UI framework."
+    ],
+    "fileSystemRules": [
+      "Write only inside generated/react for this runtime.",
+      "Do not read or write paths outside the active Sofvary workspace.",
+      "Components go under src/components.",
+      "Styles go under src/styles.",
+      "Do not create files outside the React + Vite output contract."
+    ],
+    "outputRules": [
+      "App.tsx is the main app entry component.",
+      "The generated app must pass npm run build.",
+      "Keep Sofvary shell UI out of generated app source.",
+      "The generated app must be exportable without Sofvary floating menu or build overlay UI."
+    ],
+    "blockedCapabilities": [
+      "cdn-assets",
+      "electron-runtime",
+      "external-ui-framework",
+      "nextjs-runtime",
+      "plugin-execution",
+      "remote-network",
+      "shell-command",
+      "sofvary-shell-ui",
+      "sqlite-runtime"
+    ]
+  },
+  "fileSystemPolicy": {
+    "root": "generated/react",
+    "allowedFiles": [
+      "package.json",
+      "index.html",
+      "vite.config.ts",
+      "tsconfig.json",
+      "src/main.tsx",
+      "src/App.tsx",
+      "src/components/TaskBoard.tsx",
+      "src/styles/app.css"
+    ],
+    "allowExternalFiles": false,
+    "allowPathTraversal": false
+  },
+  "commandPolicy": {
+    "allowShell": false,
+    "allowPackageInstall": false,
+    "allowGlobalInstall": false,
+    "allowedCommands": []
+  },
+  "outputContract": {
+    "format": "react-vite-project",
+    "files": [
+      "package.json",
+      "index.html",
+      "vite.config.ts",
+      "tsconfig.json",
+      "src/main.tsx",
+      "src/App.tsx",
+      "src/components/TaskBoard.tsx",
+      "src/styles/app.css"
+    ],
+    "shellUiIncluded": false
+  },
+  "acceptanceCriteria": [
+    "Generated output contains exactly the React + Vite project file set.",
+    "Generated app uses React function components, TypeScript, and Vite.",
+    "Generated app does not include Sofvary shell UI, floating menu, build overlay, or host controls.",
+    "Generated app uses no Next.js, Electron, external CDN, remote assets, SQLite, or default UI framework.",
+    "Generated app can run through the local Vite dev server bound to 127.0.0.1.",
+    "Harness sofvary.harness.react-vite@0.1.0 constraints are represented in the prompt envelope."
+  ]
+}

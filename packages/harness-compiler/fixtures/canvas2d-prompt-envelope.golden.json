@@ -1,0 +1,120 @@
+{
+  "schemaVersion": "1.0",
+  "envelopeId": "penv_canvas2d_golden",
+  "createdAt": "2026-06-03T00:00:00.000Z",
+  "boxRuntimeContext": {
+    "runtimePack": {
+      "id": "sofvary.runtime.canvas2d",
+      "version": "0.1.0"
+    },
+    "harnessPacks": [
+      {
+        "id": "sofvary.harness.canvas2d",
+        "version": "0.1.0"
+      }
+    ],
+    "runtimeKind": "canvas2d",
+    "generatedRoot": "generated/canvas",
+    "entrypoint": "index.html",
+    "bind": "127.0.0.1",
+    "network": "local-only"
+  },
+  "userIntent": "Build a canvas coin collector",
+  "currentAppState": {
+    "appId": "app_test",
+    "workspaceName": "Timer",
+    "mode": "create",
+    "existingFiles": [],
+    "previewState": "empty"
+  },
+  "runtimePolicy": {
+    "runtimeKind": "canvas2d",
+    "allowedEntrypoints": ["index.html"],
+    "allowedServerBind": "127.0.0.1",
+    "network": "local-only",
+    "packageInstall": false
+  },
+  "harnessPolicy": {
+    "systemInstructions": [
+      "Generate a self-contained Canvas 2D app using browser Canvas 2D APIs and requestAnimationFrame.",
+      "Do not use React, CDNs, remote assets, npm packages, external dependencies, SQLite, or plugin execution."
+    ],
+    "fileSystemRules": [
+      "Write only inside generated/canvas for this runtime.",
+      "Do not read or write paths outside the active Sofvary workspace.",
+      "Split update, render, input, and state across the declared engine and game files.",
+      "Do not create files outside the Canvas 2D output contract.",
+      "Use assets/ only for workspace-local assets."
+    ],
+    "outputRules": [
+      "Use requestAnimationFrame as the main loop driver.",
+      "Use CanvasRenderingContext2D for rendering.",
+      "Level data should be configurable.",
+      "Include pause and restart controls where reasonable.",
+      "Keep Sofvary shell UI out of generated app source.",
+      "The generated app must be exportable without Sofvary floating menu or build overlay UI."
+    ],
+    "blockedCapabilities": [
+      "cdn-assets",
+      "external-assets",
+      "npm-package-install",
+      "plugin-execution",
+      "react-runtime",
+      "remote-network",
+      "shell-command",
+      "sofvary-shell-ui",
+      "sqlite-runtime"
+    ]
+  },
+  "fileSystemPolicy": {
+    "root": "generated/canvas",
+    "allowedFiles": [
+      "index.html",
+      "style.css",
+      "src/main.js",
+      "src/engine/loop.js",
+      "src/engine/input.js",
+      "src/engine/scene.js",
+      "src/engine/collision.js",
+      "src/engine/assets.js",
+      "src/game/config.js",
+      "src/game/player.js",
+      "src/game/enemies.js",
+      "src/game/levels.js"
+    ],
+    "allowExternalFiles": false,
+    "allowPathTraversal": false
+  },
+  "commandPolicy": {
+    "allowShell": false,
+    "allowPackageInstall": false,
+    "allowGlobalInstall": false,
+    "allowedCommands": []
+  },
+  "outputContract": {
+    "format": "canvas2d-project",
+    "files": [
+      "index.html",
+      "style.css",
+      "src/main.js",
+      "src/engine/loop.js",
+      "src/engine/input.js",
+      "src/engine/scene.js",
+      "src/engine/collision.js",
+      "src/engine/assets.js",
+      "src/game/config.js",
+      "src/game/player.js",
+      "src/game/enemies.js",
+      "src/game/levels.js"
+    ],
+    "shellUiIncluded": false
+  },
+  "acceptanceCriteria": [
+    "Generated output contains exactly the Canvas 2D project file set.",
+    "Generated app uses the Canvas 2D API and requestAnimationFrame.",
+    "Generated app does not use React, external CDN, remote assets, npm packages, or Sofvary shell UI.",
+    "Update, render, input, and state are split across declared engine and game files.",
+    "Level data is configurable and pause/restart behavior is included where reasonable.",
+    "Harness sofvary.harness.canvas2d@0.1.0 constraints are represented in the prompt envelope."
+  ]
+}

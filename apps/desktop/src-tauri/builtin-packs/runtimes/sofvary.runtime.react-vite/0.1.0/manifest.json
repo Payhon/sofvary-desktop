@@ -1,0 +1,66 @@
+{
+  "schemaVersion": "1.0",
+  "type": "sofvary.runtime-pack",
+  "id": "sofvary.runtime.react-vite",
+  "version": "0.1.0",
+  "name": "React + Vite Runtime",
+  "description": "Runs isolated React and TypeScript apps from generated/react through a local Vite dev server or built static output.",
+  "compatibility": {
+    "client": ">=0.1.0",
+    "os": {
+      "windows": {
+        "supported": true,
+        "minVersion": "10.0.17763"
+      },
+      "macos": {
+        "supported": true,
+        "minVersion": "12.0"
+      },
+      "linux": {
+        "supported": true
+      }
+    },
+    "arch": ["x64", "arm64"]
+  },
+  "stack": {
+    "frontend": "React",
+    "language": "TypeScript",
+    "bundler": "Vite",
+    "database": "None",
+    "server": "Vite local dev server"
+  },
+  "runtime": {
+    "kind": "react-vite",
+    "generatedRoot": "generated/react",
+    "entrypoint": "src/main.tsx",
+    "bind": "127.0.0.1",
+    "network": "local-only"
+  },
+  "commands": {
+    "install": {
+      "executable": "${sidecar:pnpm}",
+      "args": ["install", "--offline", "--ignore-scripts"],
+      "cwd": "generated/react",
+      "allowedNetwork": false,
+      "timeoutMs": 60000,
+      "killOnDrop": true
+    },
+    "dev": {
+      "executable": "${sidecar:pnpm}",
+      "args": ["exec", "vite", "--host", "127.0.0.1", "--port", "${port}"],
+      "cwd": "generated/react",
+      "allowedNetwork": false,
+      "killOnDrop": true
+    },
+    "build": {
+      "executable": "${sidecar:pnpm}",
+      "args": ["run", "build"],
+      "cwd": "generated/react",
+      "allowedNetwork": false,
+      "timeoutMs": 120000,
+      "killOnDrop": true
+    }
+  },
+  "defaultHarness": ["sofvary.harness.react-vite"],
+  "integrity": {}
+}

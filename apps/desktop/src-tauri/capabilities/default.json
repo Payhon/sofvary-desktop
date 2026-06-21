@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default desktop window permissions.",
+  "windows": ["main", "command", "glyph"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-shadow",
+    "core:window:allow-start-dragging",
+    "dialog:allow-open",
+    "dialog:allow-save"
+  ]
+}

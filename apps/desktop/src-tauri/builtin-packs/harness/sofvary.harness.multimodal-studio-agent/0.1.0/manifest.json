@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "1.0",
+  "type": "sofvary.harness-pack",
+  "id": "sofvary.harness.multimodal-studio-agent",
+  "version": "0.1.0",
+  "name": "Multimodal Studio Agent Harness",
+  "description": "Constrains AI Agent Apps for text, image, and video jobs through Sofvary's local AI Gateway.",
+  "compatibility": {
+    "client": ">=0.1.0",
+    "os": {
+      "windows": {
+        "supported": true,
+        "minVersion": "10.0.17763"
+      },
+      "macos": {
+        "supported": true,
+        "minVersion": "12.0"
+      },
+      "linux": {
+        "supported": true
+      }
+    },
+    "arch": ["x64", "arm64"]
+  },
+  "runtime": "sofvary.runtime.ai-agent-app",
+  "softwareSpecies": {
+    "id": "multimodal-studio-agent",
+    "name": "Multimodal Studio Agent",
+    "description": "A provider-bound AI studio for text, image, and video creation inside one generated app.",
+    "runtimeKinds": ["ai-agent-app"],
+    "tags": ["agent", "text", "image", "video", "multimodal"]
+  },
+  "instructions": {
+    "system": [
+      "Generate an AI Agent App with text, image, and video job panels backed by local Sofvary AI Gateway calls.",
+      "Provider settings must configure requirements and binding status only, never API keys or secure refs."
+    ],
+    "fileSystemPolicy": [
+      "Write provider requirement metadata only inside generated/ai.",
+      "Write React UI files only inside generated/react.",
+      "Do not read or write paths outside the active Sofvary workspace."
+    ],
+    "outputRules": [
+      "Show needs-provider-binding when no local provider binding is available.",
+      "Send text, image, video, status, and artifact requests only to the local Sofvary AI Gateway.",
+      "Keep generated app source free of Sofvary shell UI, Coding Agent Gateway, secrets, secure refs, and author-local provider ids."
+    ]
+  },
+  "integrity": {}
+}

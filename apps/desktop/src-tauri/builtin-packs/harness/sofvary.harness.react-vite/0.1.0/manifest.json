@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "1.0",
+  "type": "sofvary.harness-pack",
+  "id": "sofvary.harness.react-vite",
+  "version": "0.1.0",
+  "name": "React + Vite Harness",
+  "description": "Constrains React + Vite generation to a workspace-local TypeScript app without external UI frameworks or CDN assets.",
+  "compatibility": {
+    "client": ">=0.1.0",
+    "os": {
+      "windows": {
+        "supported": true,
+        "minVersion": "10.0.17763"
+      },
+      "macos": {
+        "supported": true,
+        "minVersion": "12.0"
+      },
+      "linux": {
+        "supported": true
+      }
+    },
+    "arch": ["x64", "arm64"]
+  },
+  "runtime": "sofvary.runtime.react-vite",
+  "instructions": {
+    "system": [
+      "Generate a React function-component app using TypeScript and Vite.",
+      "Do not use Next.js, Electron, external CDNs, remote assets, SQLite, or UI frameworks unless explicitly requested."
+    ],
+    "fileSystemPolicy": [
+      "Write only inside generated/react for this runtime.",
+      "Components go under src/components.",
+      "Styles go under src/styles.",
+      "Do not read or write paths outside the active Sofvary workspace."
+    ],
+    "outputRules": [
+      "App.tsx is the main app entry component.",
+      "npm run build must pass.",
+      "Keep Sofvary shell UI out of generated app source."
+    ]
+  },
+  "integrity": {}
+}

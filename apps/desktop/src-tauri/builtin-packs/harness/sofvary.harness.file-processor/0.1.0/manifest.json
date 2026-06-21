@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "1.0",
+  "type": "sofvary.harness-pack",
+  "id": "sofvary.harness.file-processor",
+  "version": "0.1.0",
+  "name": "File Processor Harness",
+  "description": "Constrains file processor apps to explicit file selection, read-only startup, dry-run preview, confirmation, and operation logs.",
+  "compatibility": {
+    "client": ">=0.1.0",
+    "os": {
+      "windows": {
+        "supported": true,
+        "minVersion": "10.0.17763"
+      },
+      "macos": {
+        "supported": true,
+        "minVersion": "12.0"
+      },
+      "linux": {
+        "supported": true
+      }
+    },
+    "arch": ["x64", "arm64"]
+  },
+  "runtime": "sofvary.runtime.file-processor",
+  "instructions": {
+    "system": [
+      "Generate a React file processor app that starts read-only and requires explicit file or folder selection.",
+      "Do not modify files until a dry-run preview exists and the user confirms the operation."
+    ],
+    "fileSystemPolicy": [
+      "Write React UI files only inside generated/react.",
+      "Write runtime-local policy metadata only inside generated/file-processor.",
+      "Never access paths that were not selected by the user."
+    ],
+    "outputRules": [
+      "Show a dry-run preview before any write operation.",
+      "Log planned operations.",
+      "Never permanently delete files without explicit confirmation.",
+      "Keep Sofvary shell UI out of generated app source."
+    ]
+  },
+  "integrity": {}
+}

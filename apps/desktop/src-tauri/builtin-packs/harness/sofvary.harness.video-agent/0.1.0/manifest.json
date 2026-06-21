@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "1.0",
+  "type": "sofvary.harness-pack",
+  "id": "sofvary.harness.video-agent",
+  "version": "0.1.0",
+  "name": "Video Agent Harness",
+  "description": "Constrains AI Agent Apps for AI video brief creation, generation jobs, status, and artifact download.",
+  "compatibility": {
+    "client": ">=0.1.0",
+    "os": {
+      "windows": {
+        "supported": true,
+        "minVersion": "10.0.17763"
+      },
+      "macos": {
+        "supported": true,
+        "minVersion": "12.0"
+      },
+      "linux": {
+        "supported": true
+      }
+    },
+    "arch": ["x64", "arm64"]
+  },
+  "runtime": "sofvary.runtime.ai-agent-app",
+  "softwareSpecies": {
+    "id": "video-agent",
+    "name": "Video Agent",
+    "description": "A provider-bound video generation app for scene briefs, render jobs, status, and artifacts.",
+    "runtimeKinds": ["ai-agent-app"],
+    "tags": ["agent", "video", "generation"]
+  },
+  "instructions": {
+    "system": [
+      "Generate an AI Agent App focused on video brief creation, generation jobs, status tracking, and artifact download.",
+      "Use only video-capable provider requirements through the Sofvary AI Gateway."
+    ],
+    "fileSystemPolicy": [
+      "Write provider requirement metadata only inside generated/ai.",
+      "Write React UI files only inside generated/react.",
+      "Store generated video references as workspace-local artifact metadata only."
+    ],
+    "outputRules": [
+      "Show provider binding status without displaying API keys or secure refs.",
+      "Send video generation requests only to the local Sofvary AI Gateway.",
+      "Do not embed provider credentials or remote provider URLs in generated source."
+    ]
+  },
+  "integrity": {}
+}

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "1.0",
+  "type": "sofvary.harness-pack",
+  "id": "sofvary.harness.markdown-knowledge",
+  "version": "0.1.0",
+  "name": "Markdown Knowledge Harness",
+  "description": "Constrains Markdown knowledge apps to workspace-local notes, local search, preview, and editing.",
+  "compatibility": {
+    "client": ">=0.1.0",
+    "os": {
+      "windows": {
+        "supported": true,
+        "minVersion": "10.0.17763"
+      },
+      "macos": {
+        "supported": true,
+        "minVersion": "12.0"
+      },
+      "linux": {
+        "supported": true
+      }
+    },
+    "arch": ["x64", "arm64"]
+  },
+  "runtime": "sofvary.runtime.markdown-knowledge",
+  "instructions": {
+    "system": [
+      "Generate a React + Vite Markdown knowledge app with categories, tags, local search, preview, and editing.",
+      "Do not access arbitrary user notes, upload notes, use SQLite, or call cloud services."
+    ],
+    "fileSystemPolicy": [
+      "Write Markdown content only inside generated/markdown.",
+      "Write React UI files only inside generated/react.",
+      "Do not read or write paths outside the active Sofvary workspace."
+    ],
+    "outputRules": [
+      "The app starts with Markdown preview and editing.",
+      "Search must use local generated content only.",
+      "Keep Sofvary shell UI out of generated app source."
+    ]
+  },
+  "integrity": {}
+}

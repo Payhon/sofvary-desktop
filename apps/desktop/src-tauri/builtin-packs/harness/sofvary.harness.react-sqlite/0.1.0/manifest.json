@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "1.0",
+  "type": "sofvary.harness-pack",
+  "id": "sofvary.harness.react-sqlite",
+  "version": "0.1.0",
+  "name": "React + SQLite Harness",
+  "description": "Constrains React + SQLite generation to a local React frontend, Node API, and workspace-bound SQLite database.",
+  "compatibility": {
+    "client": ">=0.1.0",
+    "os": {
+      "windows": {
+        "supported": true,
+        "minVersion": "10.0.17763"
+      },
+      "macos": {
+        "supported": true,
+        "minVersion": "12.0"
+      },
+      "linux": {
+        "supported": true
+      }
+    },
+    "arch": ["x64", "arm64"]
+  },
+  "runtime": "sofvary.runtime.react-sqlite",
+  "instructions": {
+    "system": [
+      "Generate a React frontend, a Node local API, and SQLite persistence for a local customer manager.",
+      "The frontend must call /api/* endpoints only and must never open or import SQLite directly."
+    ],
+    "fileSystemPolicy": [
+      "Write React and Node API files inside generated/react.",
+      "Write schema, migrations, seed data, and app.sqlite only inside generated/data.",
+      "Do not read or write paths outside the active Sofvary workspace."
+    ],
+    "outputRules": [
+      "Use parameterized SQL statements for every user-controlled value.",
+      "The API must bind to 127.0.0.1 only.",
+      "Keep Sofvary shell UI out of generated app source."
+    ]
+  },
+  "integrity": {}
+}

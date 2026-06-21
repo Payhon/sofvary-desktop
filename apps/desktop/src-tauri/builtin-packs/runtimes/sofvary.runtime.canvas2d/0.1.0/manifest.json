@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "1.0",
+  "type": "sofvary.runtime-pack",
+  "id": "sofvary.runtime.canvas2d",
+  "version": "0.1.0",
+  "name": "Canvas 2D Runtime",
+  "description": "Runs isolated Canvas 2D apps from generated/canvas through Sofvary's local static server.",
+  "compatibility": {
+    "client": ">=0.1.0",
+    "os": {
+      "windows": {
+        "supported": true,
+        "minVersion": "10.0.17763"
+      },
+      "macos": {
+        "supported": true,
+        "minVersion": "12.0"
+      },
+      "linux": {
+        "supported": true
+      }
+    },
+    "arch": ["x64", "arm64"]
+  },
+  "stack": {
+    "frontend": "Canvas 2D",
+    "language": "JavaScript",
+    "bundler": "None",
+    "database": "None",
+    "server": "Sofvary local static server"
+  },
+  "runtime": {
+    "kind": "canvas2d",
+    "generatedRoot": "generated/canvas",
+    "entrypoint": "index.html",
+    "bind": "127.0.0.1",
+    "network": "local-only"
+  },
+  "commands": {},
+  "defaultHarness": ["sofvary.harness.canvas2d"],
+  "integrity": {}
+}
