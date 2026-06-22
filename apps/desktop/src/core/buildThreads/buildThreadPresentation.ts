@@ -1,5 +1,7 @@
-import type { BuildThreadEntry, BuildThreadEntryKind } from "../../types";
+import type { BuildThreadEntry, BuildThreadEntryKind, GatewayUniEvent } from "../../types";
 import { parseThreadCodeCard } from "./threadCodeCard";
+
+type Translator = (key: string, params?: Record<string, string | number | boolean | null | undefined>, fallback?: string) => string;
 
 export type BuildThreadPresentationKind =
   | "user"
@@ -7,6 +9,8 @@ export type BuildThreadPresentationKind =
   | "progress"
   | "file"
   | "tool"
+  | "terminal"
+  | "approval"
   | "runtime"
   | "system"
   | "error";
@@ -51,8 +55,13 @@ interface KnownStatusCopy {
 
 export function presentBuildThreadEntry(
   entry: BuildThreadEntry,
-  _t?: (key: string, params?: Record<string, string | number | boolean | null | undefined>, fallback?: string) => string,
+  t?: Translator,
 ): BuildThreadPresentationItem {
+  const gatewayEvent = gatewayEventFromEntry(entry);
+  if (gatewayEvent) {
+    return presentGatewayUniEvent(entry, gatewayEvent, t);
+  }
+
   const content = normalizeContent(entry.content);
   const codeCard = parseThreadCodeCard(content);
 
@@ -125,14 +134,273 @@ export function presentBuildThreadEntry(
   }
 }
 
+function presentGatewayUniEvent(
+  entry: BuildThreadEntry,
+  event: GatewayUniEvent,
+  t?: Translator,
+): BuildThreadPresentationItem {
+  switch (event.type) {
+    case "session.started":
+      return presentation(entry, {
+        kind: "progress",
+        tone: "working",
+        icon: "AI",
+        label: tr(t, "task.gateway.label.session", "会话"),
+        title: tr(t, "task.gateway.sessionConnected", "已连接 Coding Agent"),
+        description: `${event.agentId} · ${event.transport}`,
+        details: gatewayDetails(event, t),
+      });
+    case "turn.started":
+      return presentation(entry, {
+        kind: "progress",
+        tone: "working",
+        icon: "▶",
+        label: tr(t, "task.gateway.label.session", "会话"),
+        title: tr(t, "task.gateway.turnStarted", "本轮建造已开始"),
+        description: tr(
+          t,
+          "task.gateway.turnStartedDesc",
+          "Sofvary 正在把需求交给 Agent 并接收实时输出。",
+        ),
+        details: gatewayDetails(event, t),
+      });
+    case "message.delta":
+      return presentGatewayMessageDelta(entry, event, t);
+    case "reasoning.delta":
+      return presentation(entry, {
+        kind: "progress",
+        tone: "working",
+        icon: "◌",
+        label: tr(t, "task.gateway.label.reasoning", "推理"),
+        title: tr(t, "task.gateway.reasoningTitle", "Agent 正在规划实现"),
+        description: tr(
+          t,
+          "task.gateway.reasoningDesc",
+          "推理细节默认收起，避免干扰建造主线。",
+        ),
+        details: gatewayDetails(event, t),
+        hidesTechnicalDetail: true,
+        technicalDetail: gatewayPayloadText(event, "text"),
+      });
+    case "tool.started":
+    case "tool.delta":
+    case "tool.completed":
+      return presentGatewayToolEvent(entry, event, t);
+    case "approval.requested":
+    case "approval.resolved":
+      return presentGatewayApprovalEvent(entry, event, t);
+    case "terminal.output":
+      return presentGatewayTerminalEvent(entry, event, t);
+    case "file.write.requested":
+    case "file.written":
+      return presentGatewayFileEvent(entry, event, t);
+    case "status.changed":
+      return presentation(entry, {
+        kind: "progress",
+        tone: "working",
+        icon: "◌",
+        label: tr(t, "task.gateway.label.progress", "进度"),
+        title: gatewayPayloadText(event, "phase") || tr(t, "task.gateway.statusChanged", "建造状态已更新"),
+        description: gatewayPayloadText(event, "detail"),
+        details: gatewayDetails(event, t),
+      });
+    case "turn.completed": {
+      const status = gatewayPayloadText(event, "status") || "ok";
+      return presentation(entry, {
+        kind: "progress",
+        tone: status === "ok" ? "success" : "warning",
+        icon: status === "ok" ? "✓" : "!",
+        label: tr(t, "task.gateway.label.session", "会话"),
+        title:
+          status === "ok"
+            ? tr(t, "task.gateway.turnCompleted", "本轮建造已完成")
+            : tr(t, "task.gateway.turnIncomplete", "本轮建造未完成"),
+        description:
+          status === "ok"
+            ? tr(t, "task.gateway.turnCompletedDesc", "Sofvary 正在整理结果并进入预览。")
+            : tr(t, "task.gateway.turnIncompleteDesc", "可查看技术细节后继续调整。"),
+        details: gatewayDetails(event, t),
+      });
+    }
+    case "error":
+      return presentation(entry, {
+        kind: "error",
+        tone: "danger",
+        icon: "!",
+        label: tr(t, "task.gateway.label.error", "问题"),
+        title: tr(t, "task.gateway.errorTitle", "Agent 会话出现问题"),
+        description: gatewayPayloadText(event, "message") || tr(t, "task.gateway.errorDesc", "Sofvary 已停止当前步骤。"),
+        details: gatewayDetails(event, t),
+        hidesTechnicalDetail: true,
+      });
+  }
+}
+
+function presentGatewayMessageDelta(
+  entry: BuildThreadEntry,
+  event: GatewayUniEvent,
+  t?: Translator,
+): BuildThreadPresentationItem {
+  const text = gatewayPayloadText(event, "text") || gatewayPayloadText(event, "content") || "";
+  if (looksLikeTechnicalPayload(text)) {
+    return presentation(entry, {
+      kind: "assistant",
+      tone: "neutral",
+      icon: "AI",
+      label: "Agent",
+      title: tr(t, "task.gateway.agentTechnicalOutput", "Agent 输出已折叠"),
+      description: tr(
+        t,
+        "task.gateway.agentTechnicalOutputDesc",
+        "代码、JSON 或结构化实现细节已收起，工具、文件和终端状态会单独显示。",
+      ),
+      details: gatewayDetails(event, t),
+      hidesTechnicalDetail: true,
+      technicalDetail: text,
+      isActive: false,
+    });
+  }
+
+  return presentation(entry, {
+    kind: "assistant",
+    tone: "neutral",
+    icon: "AI",
+    label: "Agent",
+    title: tr(t, "task.gateway.agentMessage", "Agent 反馈"),
+    description: text || tr(t, "task.gateway.agentMessageDesc", "Agent 正在继续处理。"),
+    details: gatewayDetails(event, t),
+    isActive: false,
+  });
+}
+
+function presentGatewayToolEvent(
+  entry: BuildThreadEntry,
+  event: GatewayUniEvent,
+  t?: Translator,
+): BuildThreadPresentationItem {
+  const toolName = gatewayPayloadText(event, "toolName") || "tool";
+  const status = gatewayPayloadText(event, "status");
+  const isDone = event.type === "tool.completed";
+  const failed = status === "error";
+  return presentation(entry, {
+    kind: "tool",
+    tone: failed ? "warning" : isDone ? "success" : "working",
+    icon: failed ? "!" : isDone ? "✓" : "⌁",
+    label: tr(t, "task.gateway.label.tool", "工具"),
+    title: isDone
+      ? tr(t, "task.gateway.toolCompleted", `工具调用已完成：${toolName}`, { toolName })
+      : tr(t, "task.gateway.toolStarted", `正在调用工具：${toolName}`, { toolName }),
+    description: failed
+      ? tr(t, "task.gateway.toolFailedDesc", "工具返回了错误，Sofvary 会保留完整技术细节。")
+      : tr(t, "task.gateway.toolDesc", "工具输入输出已折叠，可按需查看。"),
+    details: gatewayDetails(event, t, [{ label: tr(t, "task.gateway.detail.tool", "工具"), value: toolName }]),
+    hidesTechnicalDetail: true,
+  });
+}
+
+function presentGatewayApprovalEvent(
+  entry: BuildThreadEntry,
+  event: GatewayUniEvent,
+  t?: Translator,
+): BuildThreadPresentationItem {
+  const action = gatewayPayloadText(event, "action") || "agent action";
+  const decision = gatewayPayloadText(event, "decision");
+  return presentation(entry, {
+    kind: "approval",
+    tone: event.type === "approval.requested" ? "warning" : decision === "approved" ? "success" : "warning",
+    icon: event.type === "approval.requested" ? "!" : decision === "approved" ? "✓" : "×",
+    label: tr(t, "task.gateway.label.approval", "审批"),
+    title:
+      event.type === "approval.requested"
+        ? tr(t, "task.gateway.approvalRequested", `需要确认：${action}`, { action })
+        : tr(t, "task.gateway.approvalResolved", `审批已处理：${decision || "resolved"}`, {
+            decision: decision || "resolved",
+          }),
+    description:
+      gatewayPayloadText(event, "subject") ||
+      tr(t, "task.gateway.approvalDesc", "Sofvary 正在按安全策略处理 Agent 请求。"),
+    details: gatewayDetails(event, t),
+    hidesTechnicalDetail: true,
+  });
+}
+
+function presentGatewayTerminalEvent(
+  entry: BuildThreadEntry,
+  event: GatewayUniEvent,
+  t?: Translator,
+): BuildThreadPresentationItem {
+  const stream = gatewayPayloadText(event, "stream") || "stdout";
+  const text = gatewayPayloadText(event, "text") || "";
+  return presentation(entry, {
+    kind: "terminal",
+    tone: stream === "stderr" ? "warning" : "neutral",
+    icon: "⌘",
+    label: tr(t, "task.gateway.label.terminal", "终端"),
+    title:
+      stream === "stderr"
+        ? tr(t, "task.gateway.terminalWarning", "Agent 终端提示")
+        : tr(t, "task.gateway.terminalOutput", "Agent 终端输出"),
+    description:
+      stream === "stderr"
+        ? tr(t, "task.gateway.terminalWarningDesc", "stderr 输出已收起，创建流程会继续按策略推进。")
+        : truncate(text, 120),
+    details: gatewayDetails(event, t, [{ label: tr(t, "task.gateway.detail.stream", "流"), value: stream }]),
+    hidesTechnicalDetail: true,
+    technicalDetail: text,
+    isActive: false,
+  });
+}
+
+function presentGatewayFileEvent(
+  entry: BuildThreadEntry,
+  event: GatewayUniEvent,
+  t?: Translator,
+): BuildThreadPresentationItem {
+  const path = gatewayPayloadText(event, "path") || "generated file";
+  const written = event.type === "file.written";
+  return presentation(entry, {
+    kind: "file",
+    tone: written ? "success" : "working",
+    icon: written ? "✓" : "□",
+    label: tr(t, "task.gateway.label.file", "文件"),
+    title: written
+      ? tr(t, "task.gateway.fileWritten", `已生成 ${basename(path)}`, { fileName: basename(path) })
+      : tr(t, "task.gateway.fileRequested", `准备写入 ${basename(path)}`, { fileName: basename(path) }),
+    description: written
+      ? tr(t, "task.gateway.fileWrittenDesc", "文件已进入 Sofvary 受控输出集合。")
+      : tr(t, "task.gateway.fileRequestedDesc", "Agent 请求写入文件，Sofvary 会按工作区边界处理。"),
+    details: gatewayDetails(event, t, [{ label: tr(t, "task.gateway.detail.file", "文件"), value: path }]),
+    hidesTechnicalDetail: !written,
+  });
+}
+
 export function mergeBuildThreadPresentationItems(
   items: BuildThreadPresentationItem[],
 ): BuildThreadPresentationItem[] {
   let progressItem: BuildThreadPresentationItem | null = null;
+  let assistantStreamItem: BuildThreadPresentationItem | null = null;
   const merged: BuildThreadPresentationItem[] = [];
 
   for (const item of items) {
+    if (isMergeableAssistantStreamItem(item)) {
+      if (!assistantStreamItem) {
+        assistantStreamItem = item;
+        merged.push(item);
+        continue;
+      }
+
+      const previousIndex = merged.findIndex((candidate) => candidate.id === assistantStreamItem?.id);
+      if (previousIndex >= 0) {
+        merged.splice(previousIndex, 1);
+      }
+
+      assistantStreamItem = mergeAssistantStreamItems(assistantStreamItem, item);
+      merged.push(assistantStreamItem);
+      continue;
+    }
+
     if (!isMergeableProgressItem(item)) {
+      assistantStreamItem = null;
       merged.push(item);
       continue;
     }
@@ -175,6 +443,70 @@ function isMergeableProgressItem(item: BuildThreadPresentationItem): boolean {
   return item.sourceKind === "agent-event" && item.kind === "progress";
 }
 
+function isMergeableAssistantStreamItem(item: BuildThreadPresentationItem): boolean {
+  return (
+    item.kind === "assistant" &&
+    item.label === "Agent" &&
+    item.tone === "neutral" &&
+    !item.isActive
+  );
+}
+
+function mergeAssistantStreamItems(
+  previous: BuildThreadPresentationItem,
+  next: BuildThreadPresentationItem,
+): BuildThreadPresentationItem {
+  const mergedText = appendStreamText(
+    assistantStreamText(previous),
+    assistantStreamText(next),
+  );
+  const shouldFold = previous.hidesTechnicalDetail || next.hidesTechnicalDetail || looksLikeTechnicalPayload(mergedText);
+  const foldedTitle =
+    (next.hidesTechnicalDetail ? next.title : null) ??
+    (previous.hidesTechnicalDetail ? previous.title : null) ??
+    "Agent 输出已折叠";
+  const foldedDescription =
+    (next.hidesTechnicalDetail ? next.description : null) ??
+    (previous.hidesTechnicalDetail ? previous.description : null) ??
+    "代码、JSON 或结构化实现细节已收起，工具、文件和终端状态会单独显示。";
+  return {
+    ...next,
+    id: previous.id,
+    title: shouldFold ? foldedTitle : next.title,
+    description: shouldFold ? foldedDescription : mergedText || next.description,
+    details: mergeDetails(previous.details, next.details),
+    hidesTechnicalDetail: shouldFold,
+    technicalDetail: shouldFold ? mergedText : null,
+    isActive: next.isActive,
+  };
+}
+
+function assistantStreamText(item: BuildThreadPresentationItem): string {
+  if (item.hidesTechnicalDetail && item.technicalDetail) {
+    return item.technicalDetail;
+  }
+  return item.description ?? "";
+}
+
+function appendStreamText(left: string, right: string): string {
+  if (!left) return right;
+  if (!right) return left;
+  return `${left}${right}`;
+}
+
+function mergeDetails(
+  left: BuildThreadPresentationDetail[],
+  right: BuildThreadPresentationDetail[],
+): BuildThreadPresentationDetail[] {
+  const merged = [...left];
+  for (const detail of right) {
+    if (!merged.some((item) => item.label === detail.label && item.value === detail.value)) {
+      merged.push(detail);
+    }
+  }
+  return merged;
+}
+
 function mergeProgressItems(
   previous: BuildThreadPresentationItem,
   next: BuildThreadPresentationItem,
@@ -209,12 +541,13 @@ function presentAssistantEntry(
   if (looksLikeTechnicalPayload(content)) {
     return presentation(entry, {
       kind: "assistant",
-      tone: "working",
+      tone: "neutral",
       icon: "AI",
       label: "Agent",
-      title: "正在整理实现内容",
-      description: "实现细节正在处理中，界面会在准备好后自动更新。",
+      title: "Agent 输出已折叠",
+      description: "代码、JSON 或结构化实现细节已收起，工具、文件和终端状态会单独显示。",
       hidesTechnicalDetail: true,
+      isActive: false,
     });
   }
 
@@ -452,6 +785,16 @@ function knownRuntimeFailureStatus(content: string): KnownStatusCopy | null {
       hidesTechnicalDetail: true,
     };
   }
+  if (/^Sofvary 已生成软件资产，但预览环境未就绪：/.test(content)) {
+    return {
+      title: "预览环境未就绪",
+      description: content,
+      kind: "runtime",
+      tone: "warning",
+      icon: "!",
+      hidesTechnicalDetail: true,
+    };
+  }
   return null;
 }
 
@@ -614,6 +957,54 @@ function pathAfterPrefix(content: string, prefix: string): string | null {
   if (!content.toLowerCase().startsWith(prefix.toLowerCase())) return null;
   const value = content.slice(prefix.length).trim();
   return value || null;
+}
+
+export function gatewayEventFromEntry(entry: BuildThreadEntry): GatewayUniEvent | null {
+  const value = entry.metadata?.gatewayUniEvent;
+  if (!isGatewayUniEvent(value)) return null;
+  return value;
+}
+
+function isGatewayUniEvent(value: unknown): value is GatewayUniEvent {
+  if (!value || typeof value !== "object") return false;
+  const event = value as Partial<GatewayUniEvent>;
+  return (
+    typeof event.eventId === "string" &&
+    typeof event.threadId === "string" &&
+    typeof event.timestamp === "string" &&
+    typeof event.agentId === "string" &&
+    typeof event.transport === "string" &&
+    typeof event.sequence === "number" &&
+    typeof event.type === "string" &&
+    Boolean(event.payload) &&
+    typeof event.payload === "object"
+  );
+}
+
+function gatewayPayloadText(event: GatewayUniEvent, key: string): string | null {
+  const value = event.payload[key];
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function gatewayDetails(
+  event: GatewayUniEvent,
+  t?: Translator,
+  extra: BuildThreadPresentationDetail[] = [],
+): BuildThreadPresentationDetail[] {
+  return [
+    ...extra,
+    { label: tr(t, "task.gateway.detail.agent", "Agent"), value: event.agentId },
+    { label: tr(t, "task.gateway.detail.transport", "通道"), value: event.transport },
+  ];
+}
+
+function tr(
+  t: Translator | undefined,
+  key: string,
+  fallback: string,
+  params?: Record<string, string | number | boolean | null | undefined>,
+): string {
+  return t ? t(key, params, fallback) : fallback;
 }
 
 function basename(path: string): string {

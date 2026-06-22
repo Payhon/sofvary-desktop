@@ -4,6 +4,7 @@ use crate::core::agent_context_mcp::{acp_mcp_servers_for_context, SofvaryAgentCo
 use crate::core::agent_gateway::{
     AgentEvent, AgentEventSink, AgentFileWriteRequest, AgentGatewayError,
 };
+use crate::core::gateway_uni_event::{GatewayUniEventEmitter, GatewayUniEventType};
 use crate::core::harness_engine::PromptEnvelope;
 use crate::core::runtime_diagnostic::RuntimeDiagnostic;
 use crate::platform::stdio::StdioJsonRpcProcess;
@@ -24,6 +25,7 @@ pub struct AcpRunRequest<'a> {
     pub diagnostics: &'a [RuntimeDiagnostic],
     pub timeout_ms: u64,
     pub event_sink: Option<AgentEventSink>,
+    pub gateway_events: Option<GatewayUniEventEmitter>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -62,7 +64,13 @@ pub fn run_acp_agent(request: AcpRunRequest<'_>) -> Result<AcpRunOutput, AgentGa
         agent_text: String::new(),
         events: Vec::new(),
         event_sink: request.event_sink.clone(),
+        gateway_events: request.gateway_events.clone(),
     };
+    if let Some(events) = &request.gateway_events {
+        events.session_started(request.agent_id);
+        events.turn_started(request.envelope.envelope_id.clone());
+        events.status("connecting", "Starting ACP agent process");
+    }
 
     send_request(
         &mut process,
@@ -97,6 +105,10 @@ pub fn run_acp_agent(request: AcpRunRequest<'_>) -> Result<AcpRunOutput, AgentGa
     session.record_event(AgentEvent::Planning {
         message: format!("Initialized ACP agent {}", request.agent_id),
     });
+    session.record_gateway(
+        GatewayUniEventType::StatusChanged,
+        json!({ "phase": "connecting", "detail": "Initialized ACP agent" }),
+    );
 
     send_request(
         &mut process,
@@ -110,6 +122,10 @@ pub fn run_acp_agent(request: AcpRunRequest<'_>) -> Result<AcpRunOutput, AgentGa
         .and_then(Value::as_str)
         .ok_or_else(|| AgentGatewayError::Adapter("ACP session/new missing sessionId".to_string()))?
         .to_string();
+    session.record_gateway(
+        GatewayUniEventType::StatusChanged,
+        json!({ "phase": "planning", "detail": "ACP session created", "sessionId": session_id }),
+    );
 
     send_request(
         &mut process,
@@ -131,6 +147,7 @@ pub fn run_acp_agent(request: AcpRunRequest<'_>) -> Result<AcpRunOutput, AgentGa
     )?;
     let _ = read_until_response(&mut process, 2, &mut session, timeout)?;
 
+    let used_staged_files = !session.staged_files.is_empty();
     let file_writes = if session.staged_files.is_empty() {
         parse_agent_file_output(
             &session.agent_text,
@@ -155,6 +172,17 @@ pub fn run_acp_agent(request: AcpRunRequest<'_>) -> Result<AcpRunOutput, AgentGa
     output
         .file_writes
         .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    if let Some(events) = &request.gateway_events {
+        if !used_staged_files {
+            for file in &output.file_writes {
+                events.emit(
+                    GatewayUniEventType::FileWritten,
+                    json!({ "path": &file.relative_path, "source": "acp-json-fallback" }),
+                );
+            }
+        }
+        events.turn_completed("ok");
+    }
     Ok(output)
 }
 
@@ -187,6 +215,7 @@ pub fn test_acp_connection(command: &AgentCommandConfig) -> Result<String, Agent
         agent_text: String::new(),
         events: Vec::new(),
         event_sink: None,
+        gateway_events: None,
     };
     send_request(
         &mut process,
@@ -369,12 +398,46 @@ fn handle_agent_message(
         let id = message.get("id").cloned().unwrap_or(Value::Null);
         match method {
             "fs/write_text_file" => {
+                let call_id = id.to_string();
+                session.record_gateway(
+                    GatewayUniEventType::ToolStarted,
+                    json!({ "callId": &call_id, "toolName": "fs/write_text_file" }),
+                );
                 match stage_write(session, message.get("params").unwrap_or(&Value::Null)) {
                     Ok(relative_path) => {
-                        session.record_event(AgentEvent::FileWriteRequested { relative_path });
+                        session.record_event(AgentEvent::FileWriteRequested {
+                            relative_path: relative_path.clone(),
+                        });
+                        session.record_gateway(
+                            GatewayUniEventType::FileWriteRequested,
+                            json!({ "path": &relative_path }),
+                        );
+                        session.record_gateway(
+                            GatewayUniEventType::FileWritten,
+                            json!({ "path": &relative_path, "source": "acp-stage" }),
+                        );
+                        session.record_gateway(
+                            GatewayUniEventType::ToolCompleted,
+                            json!({
+                                "callId": &call_id,
+                                "toolName": "fs/write_text_file",
+                                "status": "ok"
+                            }),
+                        );
                         send_response(process, id, json!({}))
                     }
-                    Err(error) => send_error(process, id, -32001, &error),
+                    Err(error) => {
+                        session.record_gateway(
+                            GatewayUniEventType::ToolCompleted,
+                            json!({
+                                "callId": &call_id,
+                                "toolName": "fs/write_text_file",
+                                "status": "error",
+                                "output": error.clone()
+                            }),
+                        );
+                        send_error(process, id, -32001, &error)
+                    }
                 }
             }
             "fs/read_text_file" => {
@@ -383,20 +446,58 @@ fn handle_agent_message(
                     Err(error) => send_error(process, id, -32002, &error),
                 }
             }
-            "session/request_permission" => send_response(
-                process,
-                id,
+            "session/request_permission" => send_response(process, id.clone(), {
+                session.record_gateway(
+                    GatewayUniEventType::ApprovalRequested,
+                    json!({
+                        "approvalId": id.to_string(),
+                        "action": "session/request_permission",
+                        "subject": "ACP agent permission",
+                        "risks": ["External agent requested permission through ACP"]
+                    }),
+                );
+                session.record_gateway(
+                    GatewayUniEventType::ApprovalResolved,
+                    json!({
+                        "approvalId": id.to_string(),
+                        "decision": "approved",
+                        "source": "sofvary-policy"
+                    }),
+                );
                 json!({
                     "outcome": {
                         "outcome": "selected",
                         "optionId": "allow-once"
                     }
-                }),
-            ),
+                })
+            }),
             "mcp/call_tool" => {
-                match call_context_tool(session, message.get("params").unwrap_or(&Value::Null)) {
-                    Ok(result) => send_response(process, id, result),
-                    Err(error) => send_error(process, id, -32003, &error),
+                let params = message.get("params").unwrap_or(&Value::Null);
+                let tool_name = params
+                    .get("name")
+                    .or_else(|| params.get("tool"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("mcp/call_tool")
+                    .to_string();
+                session.record_gateway(
+                    GatewayUniEventType::ToolStarted,
+                    json!({ "callId": id.to_string(), "toolName": &tool_name }),
+                );
+                match call_context_tool(session, params) {
+                    Ok(result) => {
+                        session.record_gateway(
+                            GatewayUniEventType::ToolCompleted,
+                            json!({ "callId": id.to_string(), "toolName": &tool_name, "status": "ok" }),
+                        );
+                        send_response(process, id, result)
+                    }
+                    Err(error) => {
+                        session.record_gateway(
+                            GatewayUniEventType::ToolCompleted,
+                            json!({ "callId": id.to_string(), "toolName": &tool_name, "status": "error", "output": error.clone() }),
+                        );
+                        send_error(process, id, -32003, &error)
+                    }
                 }
             }
             _ => send_error(
@@ -431,6 +532,10 @@ fn stage_write(session: &mut AcpSessionState, params: &Value) -> Result<String, 
         .strip_prefix(&session.staging_root)
         .map_err(|_| "ACP file write must target the Sofvary staging output root".to_string())?;
     let relative = normalize_relative(relative)?;
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(&target, content).map_err(|error| error.to_string())?;
     session
         .staged_files
         .insert(relative.clone(), content.to_string());
@@ -498,12 +603,28 @@ fn handle_session_update(session: &mut AcpSessionState, params: &Value) {
                 .to_string();
             if !text.is_empty() {
                 session.agent_text.push_str(&text);
-                session.record_event(AgentEvent::TextDelta { text });
+                session.record_event(AgentEvent::TextDelta { text: text.clone() });
+                session.record_gateway(
+                    GatewayUniEventType::MessageDelta,
+                    json!({ "role": "assistant", "text": text }),
+                );
             }
         }
-        Some("tool_call") => session.record_event(AgentEvent::Planning {
-            message: "ACP agent requested a tool call".to_string(),
-        }),
+        Some("tool_call") => {
+            session.record_event(AgentEvent::Planning {
+                message: "ACP agent requested a tool call".to_string(),
+            });
+            let tool_name = update
+                .get("toolCall")
+                .and_then(|tool| tool.get("name"))
+                .or_else(|| update.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("tool");
+            session.record_gateway(
+                GatewayUniEventType::ToolStarted,
+                json!({ "callId": "acp-session-update", "toolName": tool_name }),
+            );
+        }
         _ => {}
     }
 }
@@ -555,7 +676,7 @@ fn build_acp_prompt(
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "You are generating a Sofvary app. First try to write every required output file through ACP fs/write_text_file using these exact absolute paths:\n{}\nIf ACP fs/write_text_file is not available to you, return exactly one JSON object and no markdown with this shape: {{\"files\":[{{\"relativePath\":\"index.html\",\"contents\":\"...\"}}]}}.\nRequired relative files: {}.\nReturn only after all files are written or after the JSON object is complete. Do not write outside this staging root: {}. Do not include Sofvary shell UI in generated app source.\n{}PromptEnvelope:\n{}",
+        "You are generating a Sofvary app. Write each required output file as soon as it is ready through ACP fs/write_text_file using these exact absolute paths; do not batch all file writes at the end:\n{}\nIf ACP fs/write_text_file is not available to you, return exactly one JSON object and no markdown with this shape: {{\"files\":[{{\"relativePath\":\"index.html\",\"contents\":\"...\"}}]}}.\nRequired relative files: {}.\nReturn only after all files are written incrementally or after the JSON object is complete. Do not write outside this staging root: {}. Do not include Sofvary shell UI in generated app source.\n{}PromptEnvelope:\n{}",
         absolute_targets,
         envelope.output_contract.files.join(", "),
         staging_root.display(),
@@ -573,6 +694,7 @@ struct AcpSessionState {
     agent_text: String,
     events: Vec<AgentEvent>,
     event_sink: Option<AgentEventSink>,
+    gateway_events: Option<GatewayUniEventEmitter>,
 }
 
 impl AcpSessionState {
@@ -583,11 +705,34 @@ impl AcpSessionState {
             self.events.push(event);
         }
     }
+
+    fn record_gateway(&self, event_type: GatewayUniEventType, payload: Value) {
+        if let Some(events) = &self.gateway_events {
+            events.emit(event_type, payload);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::agent_config::AgentTransportKind;
+    use crate::core::gateway_uni_event::GatewayUniEvent;
+    use std::sync::{Arc, Mutex};
+
+    fn captured_gateway_emitter() -> (GatewayUniEventEmitter, Arc<Mutex<Vec<GatewayUniEvent>>>) {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let sink = {
+            let captured = captured.clone();
+            Arc::new(move |event| {
+                captured.lock().expect("events").push(event);
+            })
+        };
+        (
+            GatewayUniEventEmitter::new("thread-a", "codex-acp", AgentTransportKind::Acp, sink),
+            captured,
+        )
+    }
 
     #[test]
     fn stage_write_rejects_path_outside_staging_root() {
@@ -601,6 +746,7 @@ mod tests {
             agent_text: String::new(),
             events: Vec::new(),
             event_sink: None,
+            gateway_events: None,
         };
         let result = stage_write(
             &mut session,
@@ -626,6 +772,7 @@ mod tests {
             agent_text: String::new(),
             events: Vec::new(),
             event_sink: None,
+            gateway_events: None,
         };
         let relative = stage_write(
             &mut session,
@@ -638,6 +785,10 @@ mod tests {
 
         assert_eq!(relative, "src/App.tsx");
         assert!(session.staged_files.contains_key("src/App.tsx"));
+        assert_eq!(
+            fs::read_to_string(staging.join("src/App.tsx")).expect("written file"),
+            "export default function App() {}"
+        );
     }
 
     #[test]
@@ -652,6 +803,7 @@ mod tests {
             agent_text: String::new(),
             events: Vec::new(),
             event_sink: None,
+            gateway_events: None,
         };
 
         handle_session_update(
@@ -668,6 +820,89 @@ mod tests {
         );
 
         assert_eq!(session.agent_text, "{\"files\":[]}");
+    }
+
+    #[test]
+    fn session_update_emits_gateway_message_and_tool_events() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (gateway_events, captured) = captured_gateway_emitter();
+        let mut session = AcpSessionState {
+            agent_id: "fake".to_string(),
+            workspace_root: temp.path().to_path_buf(),
+            staging_root: temp.path().join("staging"),
+            context: None,
+            staged_files: HashMap::new(),
+            agent_text: String::new(),
+            events: Vec::new(),
+            event_sink: None,
+            gateway_events: Some(gateway_events),
+        };
+
+        handle_session_update(
+            &mut session,
+            &json!({
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": { "type": "text", "text": "Working" }
+                }
+            }),
+        );
+        handle_session_update(
+            &mut session,
+            &json!({
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCall": { "name": "fs.write" }
+                }
+            }),
+        );
+
+        let events = captured.lock().expect("events");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, GatewayUniEventType::MessageDelta);
+        assert_eq!(events[0].sequence, 1);
+        assert_eq!(events[0].payload["text"], "Working");
+        assert_eq!(events[1].event_type, GatewayUniEventType::ToolStarted);
+        assert_eq!(events[1].sequence, 2);
+        assert_eq!(events[1].payload["toolName"], "fs.write");
+    }
+
+    #[test]
+    fn staged_write_can_be_reported_as_gateway_file_write_request() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let staging = temp.path().join("staging");
+        let (gateway_events, captured) = captured_gateway_emitter();
+        let mut session = AcpSessionState {
+            agent_id: "fake".to_string(),
+            workspace_root: temp.path().to_path_buf(),
+            staging_root: staging.clone(),
+            context: None,
+            staged_files: HashMap::new(),
+            agent_text: String::new(),
+            events: Vec::new(),
+            event_sink: None,
+            gateway_events: Some(gateway_events),
+        };
+        let relative = stage_write(
+            &mut session,
+            &json!({
+                "path": staging.join("index.html"),
+                "content": "<main></main>"
+            }),
+        )
+        .expect("stage write");
+
+        session.record_gateway(
+            GatewayUniEventType::FileWriteRequested,
+            json!({ "path": &relative }),
+        );
+
+        let events = captured.lock().expect("events");
+        assert_eq!(
+            events[0].event_type,
+            GatewayUniEventType::FileWriteRequested
+        );
+        assert_eq!(events[0].payload["path"], "index.html");
     }
 
     #[test]

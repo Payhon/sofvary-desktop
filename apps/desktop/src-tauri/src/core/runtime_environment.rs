@@ -680,6 +680,10 @@ fn unpack_restricted_tar(bytes: &[u8], output_dir: &Path) -> RuntimeEnvironmentR
             b'5' => {
                 fs::create_dir_all(target)?;
             }
+            b'2' | b'x' | b'g' => {
+                // Node.js and npm tarballs can contain safe symlinks or pax metadata.
+                // Sofvary only needs regular files and directories for managed sidecars.
+            }
             _ => {
                 return Err(RuntimeEnvironmentError::InvalidArtifact(format!(
                     "unsupported tar entry type for {}",
@@ -775,6 +779,7 @@ fn write_active_nodejs_sidecars(
             pnpm_cjs.display()
         )));
     }
+    make_executable(&node_executable)?;
 
     match adapter.os() {
         OsKind::Windows => {
@@ -950,6 +955,22 @@ fn nodejs_artifact_entries() -> Vec<NodejsArtifactEntry> {
             version: "24.16.0",
             channel: "LTS",
             recommended: true,
+            platform: "macos-arm64",
+            file_name: "node-v24.16.0-darwin-arm64.tar.gz",
+            sha256: "39189dab4eeb15706c424af0ac08a3044c9e48f7db12a7d77f6b7aafc7dd5df6",
+        },
+        NodejsArtifactEntry {
+            version: "24.16.0",
+            channel: "LTS",
+            recommended: true,
+            platform: "macos-x64",
+            file_name: "node-v24.16.0-darwin-x64.tar.gz",
+            sha256: "298b4c7b3cb80765c8703e42b90324a4ece3b6634947b89e769c3c980ab55185",
+        },
+        NodejsArtifactEntry {
+            version: "24.16.0",
+            channel: "LTS",
+            recommended: true,
             platform: "windows-x64",
             file_name: "node-v24.16.0-win-x64.zip",
             sha256: "edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56",
@@ -961,6 +982,22 @@ fn nodejs_artifact_entries() -> Vec<NodejsArtifactEntry> {
             platform: "windows-arm64",
             file_name: "node-v24.16.0-win-arm64.zip",
             sha256: "14834611d4c6b3c06054e7007732b90474c16e0b32f395e05b55a571ef71c6d2",
+        },
+        NodejsArtifactEntry {
+            version: "22.22.3",
+            channel: "Maintenance LTS",
+            recommended: false,
+            platform: "macos-arm64",
+            file_name: "node-v22.22.3-darwin-arm64.tar.gz",
+            sha256: "0da7ff74ef8611328c8212f17943368713a2ad953fb7d89a8c8a0eae87c23207",
+        },
+        NodejsArtifactEntry {
+            version: "22.22.3",
+            channel: "Maintenance LTS",
+            recommended: false,
+            platform: "macos-x64",
+            file_name: "node-v22.22.3-darwin-x64.tar.gz",
+            sha256: "45830ba752fa0d892c6dcd640946669801293cac820a33591ded40ac075198ec",
         },
         NodejsArtifactEntry {
             version: "22.22.3",
@@ -1160,6 +1197,27 @@ mod tests {
         assert!(node.versions.iter().any(|version| {
             version.version == "24.16.0" && version.recommended && version.channel == "LTS"
         }));
+    }
+
+    #[test]
+    fn catalog_supports_macos_arm64_node_toolchain() {
+        let adapter = TestAdapter::new(OsKind::Macos, ArchKind::Arm64);
+        let catalog = list_runtime_environment_catalog_with_adapter(&adapter);
+        let node = catalog
+            .into_iter()
+            .find(|item| item.kind == RuntimeEnvironmentKind::Nodejs)
+            .expect("node catalog");
+
+        assert!(node.supported);
+        assert_eq!(node.versions[0].platform, "macos-arm64");
+        assert_eq!(node.versions[0].version, "24.16.0");
+        assert!(node.versions[0]
+            .artifact_url
+            .ends_with("node-v24.16.0-darwin-arm64.tar.gz"));
+        assert_eq!(
+            node.versions[0].sha256,
+            "39189dab4eeb15706c424af0ac08a3044c9e48f7db12a7d77f6b7aafc7dd5df6"
+        );
     }
 
     #[test]

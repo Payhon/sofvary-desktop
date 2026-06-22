@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createTranslator } from "@sofvary/i18n";
-import type { BuildThreadDetail, BuildThreadSummary, WorkspaceSummary } from "../../types";
+import type {
+  BuildThreadDetail,
+  BuildThreadSummary,
+  GatewayUniEvent,
+  WorkspaceSummary,
+} from "../../types";
 import {
   applyBuildThreadEventBatch,
   appendBuildThreadEntry,
@@ -34,6 +39,19 @@ const baseThread: BuildThreadSummary = {
   error: null,
 };
 
+function gatewayEvent(input: Partial<GatewayUniEvent> & Pick<GatewayUniEvent, "type">): GatewayUniEvent {
+  return {
+    eventId: input.eventId ?? "gateway-event-a",
+    threadId: input.threadId ?? baseThread.id,
+    timestamp: input.timestamp ?? "2026-06-10T08:00:00Z",
+    agentId: input.agentId ?? "codex",
+    transport: input.transport ?? "cli",
+    sequence: input.sequence ?? 1,
+    payload: input.payload ?? {},
+    type: input.type,
+  };
+}
+
 test("sortBuildThreads puts the newest updated thread first", () => {
   const older = { ...baseThread, id: "older", updatedAt: "2026-06-10T08:00:00Z" };
   const newer = { ...baseThread, id: "newer", updatedAt: "2026-06-10T09:00:00Z" };
@@ -60,6 +78,7 @@ test("formatBuildThreadStatus uses creation lifecycle copy", () => {
   assert.equal(formatBuildThreadStatus({ ...baseThread, status: "planning" }), "Analyzing intent");
   assert.equal(formatBuildThreadStatus({ ...baseThread, status: "building" }), "Creating software");
   assert.equal(formatBuildThreadStatus({ ...baseThread, status: "repairing" }), "Auto-repairing runtime issue");
+  assert.equal(formatBuildThreadStatus({ ...baseThread, status: "preview-blocked" }), "Preview environment needs repair");
   assert.equal(formatBuildThreadStatus({ ...baseThread, status: "failed" }), "Build failed");
 });
 
@@ -69,6 +88,7 @@ test("formatBuildThreadStatus supports Chinese translator", () => {
   assert.equal(formatBuildThreadStatus({ ...baseThread, status: "planning" }, t), "正在分析意图");
   assert.equal(formatBuildThreadStatus({ ...baseThread, status: "building" }, t), "正在创建软件");
   assert.equal(formatBuildThreadStatus({ ...baseThread, status: "repairing" }, t), "正在自动修复运行问题");
+  assert.equal(formatBuildThreadStatus({ ...baseThread, status: "preview-blocked" }, t), "资产已就绪");
   assert.equal(formatBuildThreadStatus({ ...baseThread, status: "failed" }, t), "创建失败");
 });
 
@@ -78,10 +98,11 @@ test("summarizeBuildThreadError truncates full thread errors for toast-sized dis
   assert.equal(summarizeBuildThreadError({ ...baseThread, error })?.length, 223);
 });
 
-test("canContinueBuildThread allows completed or failed threads only", () => {
+test("canContinueBuildThread allows completed, failed, or preview-blocked threads with assets", () => {
   const threadWithApp = { ...baseThread, appId: "app_a", workspaceId: "app_a" };
   assert.equal(canContinueBuildThread({ ...threadWithApp, status: "completed" }), true);
   assert.equal(canContinueBuildThread({ ...threadWithApp, status: "failed" }), true);
+  assert.equal(canContinueBuildThread({ ...threadWithApp, status: "preview-blocked" }), true);
   assert.equal(canContinueBuildThread({ ...threadWithApp, status: "building" }), false);
   assert.equal(canContinueBuildThread({ ...threadWithApp, status: "repairing" }), false);
   assert.equal(canContinueBuildThread({ ...baseThread, status: "completed" }), false);
@@ -169,6 +190,55 @@ test("visibleThreadEntries merges consecutive assistant stream chunks", () => {
   assert.equal(entries.length, 2);
   assert.equal(entries[0].kind, "assistant");
   assert.equal(entries[0].content, "正在 生成界面");
+});
+
+test("visibleThreadEntries merges consecutive gateway message deltas into one agent entry", () => {
+  const detail: BuildThreadDetail = {
+    summary: baseThread,
+    entries: [
+      {
+        id: "chunk-a",
+        threadId: baseThread.id,
+        timestamp: "2026-06-10T08:00:01Z",
+        kind: "assistant",
+        content: "Agent message: {",
+        metadata: {
+          gatewayUniEvent: gatewayEvent({
+            eventId: "gateway-a",
+            type: "message.delta",
+            payload: { text: "{" },
+          }),
+        },
+      },
+      {
+        id: "chunk-b",
+        threadId: baseThread.id,
+        timestamp: "2026-06-10T08:00:02Z",
+        kind: "assistant",
+        content: '"files":[]}',
+        metadata: {
+          gatewayUniEvent: gatewayEvent({
+            eventId: "gateway-b",
+            type: "message.delta",
+            sequence: 2,
+            payload: { text: '"files":[]}' },
+          }),
+        },
+      },
+    ],
+  };
+
+  const entries = visibleThreadEntries(detail);
+  assert.equal(entries.length, 1);
+  const gateway = entries[0]!.metadata!.gatewayUniEvent as GatewayUniEvent | undefined;
+
+  assert.equal(entries[0]!.id, "chunk-a");
+  assert.equal(entries[0]!.timestamp, "2026-06-10T08:00:02Z");
+  assert.equal(entries[0]!.content, '{"files":[]}');
+  assert.deepEqual(entries[0]!.metadata!.mergedEntryIds, ["chunk-a", "chunk-b"]);
+  assert.equal(gateway?.eventId, "gateway-a");
+  assert.equal(gateway?.sequence, 2);
+  assert.equal(gateway?.payload.text, '{"files":[]}');
 });
 
 test("visibleThreadEntries does not merge assistant chunks across threads", () => {
@@ -306,6 +376,38 @@ test("applyBuildThreadEventBatch can select the first streamed thread", () => {
   assert.equal(next.activeThreadId, baseThread.id);
 });
 
+test("applyBuildThreadEventBatch creates active detail from summary before appending streamed entries", () => {
+  const entry = {
+    id: "gateway-file",
+    threadId: baseThread.id,
+    timestamp: "2026-06-10T08:00:02Z",
+    kind: "file" as const,
+    content: "File written: src/App.tsx",
+    metadata: {
+      gatewayUniEvent: gatewayEvent({
+        type: "file.written",
+        payload: { path: "src/App.tsx" },
+      }),
+    },
+  };
+
+  const next = applyBuildThreadEventBatch(
+    {
+      threads: [baseThread],
+      activeThreadId: baseThread.id,
+      activeThreadDetail: null,
+    },
+    {
+      summaries: [],
+      entries: [entry],
+    },
+  );
+
+  assert.equal(next.activeThreadDetail?.summary.id, baseThread.id);
+  assert.equal(next.activeThreadDetail?.entries.length, 1);
+  assert.equal(next.activeThreadDetail?.entries[0].metadata?.gatewayUniEvent, entry.metadata.gatewayUniEvent);
+});
+
 test("getBuildOverlayViewModel shows active task and latest entry only while building", () => {
   const entry = {
     id: "entry-a",
@@ -320,8 +422,37 @@ test("getBuildOverlayViewModel shows active task and latest entry only while bui
 
   assert.equal(model?.title, baseThread.title);
   assert.equal(model?.phase, "Creating software");
-  assert.equal(model?.detail, "正在生成布局");
+  assert.equal(model?.detail, "Agent output is streaming in the Stealth UI session.");
+  assert.equal(model?.eventLabel, "sofvary-pi");
+  assert.deepEqual(model?.steps.map((step) => [step.id, step.state]), [
+    ["intent", "done"],
+    ["agent", "active"],
+    ["files", "pending"],
+    ["preview", "pending"],
+  ]);
   assert.equal(getBuildOverlayViewModel("Previewing", baseThread, entry), null);
+});
+
+test("getBuildOverlayViewModel keeps streaming Gateway message deltas on the building phase", () => {
+  const entry = {
+    id: "entry-a",
+    threadId: baseThread.id,
+    timestamp: "2026-06-10T08:00:01Z",
+    kind: "assistant" as const,
+    content: "strong",
+    metadata: {
+      gatewayUniEvent: gatewayEvent({
+        type: "message.delta",
+        payload: { role: "assistant", text: "strong" },
+      }),
+    },
+  };
+
+  const model = getBuildOverlayViewModel("Building", { ...baseThread, status: "building" }, entry);
+
+  assert.equal(model?.phase, "Creating software");
+  assert.equal(model?.detail, "Agent output is streaming in the Stealth UI session.");
+  assert.equal(model?.eventLabel, "Agent Gateway");
 });
 
 test("getBuildOverlayViewModel surfaces automatic repair phase", () => {
@@ -339,6 +470,79 @@ test("getBuildOverlayViewModel surfaces automatic repair phase", () => {
 
   assert.equal(model?.phase, "Auto-repairing runtime issue");
   assert.equal(model?.detail, "正在自动修复运行问题 · Sofvary 正在把可修复的运行诊断交给 Agent，并会自动重试预览。");
+});
+
+test("getBuildOverlayViewModel surfaces preview-blocked phase as warning", () => {
+  const blockedThread: BuildThreadSummary = {
+    ...baseThread,
+    status: "preview-blocked",
+    previewIssue: {
+      kind: "managed-pnpm-missing",
+      runtimeKind: "react-sqlite",
+      summary: "runtime start failed; Sofvary environment setup is required",
+      repairAction: "install-runtime-environment",
+    },
+  };
+
+  const model = getBuildOverlayViewModel("Building", blockedThread, null);
+
+  assert.equal(model?.phase, "Preview environment not ready");
+  assert.equal(model?.detail, "runtime start failed; Sofvary environment setup is required");
+  assert.deepEqual(model?.steps.map((step) => [step.id, step.state]), [
+    ["intent", "done"],
+    ["agent", "done"],
+    ["files", "done"],
+    ["preview", "warning"],
+  ]);
+});
+
+test("getBuildOverlayViewModel maps Gateway file events to the file stage", () => {
+  const entry = {
+    id: "entry-a",
+    threadId: baseThread.id,
+    timestamp: "2026-06-10T08:00:01Z",
+    kind: "file" as const,
+    content: "File written: src/App.tsx",
+    metadata: {
+      gatewayUniEvent: gatewayEvent({
+        type: "file.written",
+        payload: { path: "src/App.tsx" },
+      }),
+    },
+  };
+
+  const model = getBuildOverlayViewModel("Building", { ...baseThread, status: "building" }, entry);
+
+  assert.equal(model?.phase, "Writing generated files");
+  assert.equal(model?.eventLabel, "src/App.tsx");
+  assert.deepEqual(model?.steps.map((step) => [step.id, step.state]), [
+    ["intent", "done"],
+    ["agent", "done"],
+    ["files", "active"],
+    ["preview", "pending"],
+  ]);
+});
+
+test("getBuildOverlayViewModel hides raw terminal output in the main wait dialog", () => {
+  const entry = {
+    id: "entry-a",
+    threadId: baseThread.id,
+    timestamp: "2026-06-10T08:00:01Z",
+    kind: "tool" as const,
+    content: "stdout: secret verbose terminal line",
+    metadata: {
+      gatewayUniEvent: gatewayEvent({
+        type: "terminal.output",
+        payload: { stream: "stdout", text: "secret verbose terminal line" },
+      }),
+    },
+  };
+
+  const model = getBuildOverlayViewModel("Building", { ...baseThread, status: "building" }, entry);
+
+  assert.equal(model?.phase, "Reading terminal output");
+  assert.equal(model?.detail, "Terminal detail is available in the Stealth UI session.");
+  assert.equal(model?.eventLabel, "stdout");
 });
 
 test("summarizeThreadEntryContent compacts and truncates long entries", () => {

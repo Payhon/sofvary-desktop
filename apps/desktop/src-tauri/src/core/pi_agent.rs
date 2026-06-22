@@ -3,6 +3,7 @@ use crate::core::agent_config::AgentCommandConfig;
 use crate::core::agent_gateway::{
     AgentEvent, AgentEventSink, AgentFileWriteRequest, AgentGatewayError,
 };
+use crate::core::gateway_uni_event::{GatewayUniEventEmitter, GatewayUniEventType};
 use crate::core::harness_engine::PromptEnvelope;
 use crate::core::runtime_diagnostic::RuntimeDiagnostic;
 use crate::platform::stdio::StdioJsonRpcProcess;
@@ -25,6 +26,7 @@ pub struct PiRunRequest<'a> {
     pub thread_id: &'a str,
     pub timeout_ms: u64,
     pub event_sink: Option<AgentEventSink>,
+    pub gateway_events: Option<GatewayUniEventEmitter>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -64,6 +66,11 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
 
     let prompt_id = format!("prompt_{}", Uuid::new_v4());
     let prompt = build_pi_prompt(request.envelope, request.staging_root, request.diagnostics);
+    if let Some(events) = &request.gateway_events {
+        events.session_started("Sofvary Pi");
+        events.turn_started(prompt_id.clone());
+        events.status("connecting", "Starting Sofvary Pi RPC harness");
+    }
     let line = serde_json::to_string(&json!({
         "id": prompt_id,
         "type": "prompt",
@@ -99,6 +106,15 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
         let value: Value = serde_json::from_str(&line)
             .map_err(|error| AgentGatewayError::Adapter(format!("invalid Pi RPC JSON: {error}")))?;
         if is_failed_pi_response(&value) {
+            if let Some(events) = &request.gateway_events {
+                events.error(
+                    value
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown command error"),
+                );
+                events.turn_completed("error");
+            }
             return Err(AgentGatewayError::Adapter(format!(
                 "Pi RPC command failed: {}",
                 value
@@ -107,7 +123,7 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
                     .unwrap_or("unknown command error")
             )));
         }
-        if maybe_cancel_pi_ui_request(&mut process, &value)? {
+        if maybe_cancel_pi_ui_request(&mut process, &value, request.gateway_events.as_ref())? {
             record_pi_event(
                 &mut events,
                 request.event_sink.as_ref(),
@@ -121,11 +137,18 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
         if is_pi_agent_end(&value) {
             if let Some(message) = pi_final_text(&value) {
                 final_text.push_str(&message);
+                let gateway_message = message.clone();
                 record_pi_event(
                     &mut events,
                     request.event_sink.as_ref(),
                     AgentEvent::TextDelta { text: message },
                 );
+                if let Some(gateway_events) = &request.gateway_events {
+                    gateway_events.message_delta(gateway_message);
+                }
+            }
+            if let Some(gateway_events) = &request.gateway_events {
+                gateway_events.turn_completed("ok");
             }
             break;
         }
@@ -134,11 +157,15 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
         }
         if let Some(message) = pi_stream_text(&value) {
             text.push_str(&message);
+            let gateway_message = message.clone();
             record_pi_event(
                 &mut events,
                 request.event_sink.as_ref(),
                 AgentEvent::TextDelta { text: message },
             );
+            if let Some(gateway_events) = &request.gateway_events {
+                gateway_events.message_delta(gateway_message);
+            }
         }
     }
 
@@ -166,6 +193,14 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
             message: format!("Pi RPC returned {} output files", file_writes.len()),
         },
     );
+    if let Some(gateway_events) = &request.gateway_events {
+        for file in &file_writes {
+            gateway_events.emit(
+                GatewayUniEventType::FileWritten,
+                json!({ "path": &file.relative_path, "source": "pi-rpc" }),
+            );
+        }
+    }
 
     Ok(PiRunOutput {
         events,
@@ -248,6 +283,7 @@ fn is_pi_agent_end(value: &Value) -> bool {
 fn maybe_cancel_pi_ui_request(
     process: &mut StdioJsonRpcProcess,
     value: &Value,
+    gateway_events: Option<&GatewayUniEventEmitter>,
 ) -> Result<bool, AgentGatewayError> {
     if !value
         .get("type")
@@ -263,6 +299,17 @@ fn maybe_cancel_pi_ui_request(
     let Some(id) = value.get("id").and_then(Value::as_str) else {
         return Ok(true);
     };
+    if let Some(events) = gateway_events {
+        events.emit(
+            GatewayUniEventType::ApprovalRequested,
+            json!({
+                "approvalId": id,
+                "action": method,
+                "subject": "Pi RPC UI input",
+                "risks": ["Sofvary cancels interactive UI requests during this generation harness turn"]
+            }),
+        );
+    }
     let line = serde_json::to_string(&json!({
         "type": "extension_ui_response",
         "id": id,
@@ -272,6 +319,12 @@ fn maybe_cancel_pi_ui_request(
     process.write_line(&line).map_err(|error| {
         AgentGatewayError::Adapter(format!("Pi RPC UI response failed: {error}"))
     })?;
+    if let Some(events) = gateway_events {
+        events.emit(
+            GatewayUniEventType::ApprovalResolved,
+            json!({ "approvalId": id, "decision": "rejected", "source": "sofvary-harness" }),
+        );
+    }
     Ok(true)
 }
 

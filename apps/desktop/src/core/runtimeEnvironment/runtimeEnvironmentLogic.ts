@@ -43,7 +43,11 @@ export function getRuntimeEnvironmentRequirementIssue(
   const nodeStatus = statuses.find((status) => status.catalog.kind === "nodejs");
   const nodeReady = nodeStatus?.node?.ok === true;
   const pnpmReady = nodeStatus?.pnpm?.ok === true;
-  if (nodeStatus?.installState === "installed" && nodeReady && pnpmReady) {
+  const managedReady =
+    nodeStatus?.source === "managed" &&
+    nodeStatus.node?.source === "managed" &&
+    nodeStatus.pnpm?.source === "managed";
+  if (nodeStatus?.installState === "installed" && nodeReady && pnpmReady && managedReady) {
     return null;
   }
 
@@ -53,12 +57,16 @@ export function getRuntimeEnvironmentRequirementIssue(
   ].filter(Boolean);
   const missingText =
     missingTools.length > 0 ? ` Missing: ${missingTools.join(", ")}.` : "";
+  const sourceText =
+    nodeReady && pnpmReady && !managedReady
+      ? " Sofvary requires its managed Node.js sidecars for this runtime; external PATH tools are not enough."
+      : "";
   const detail = nodeStatus?.detail ? ` ${nodeStatus.detail}` : "";
 
   return {
     runtimeKind,
     runtimeEnvironmentKind: "nodejs",
-    message: `${runtimeKind} requires the Node.js Toolchain before building. Install it from Settings > Runtime Environment, then start again.${missingText}${detail}`,
+    message: `${runtimeKind} requires the Sofvary-managed Node.js Toolchain before previewing. Install it from Settings > Runtime Environment, then retry preview.${missingText}${sourceText}${detail}`,
   };
 }
 

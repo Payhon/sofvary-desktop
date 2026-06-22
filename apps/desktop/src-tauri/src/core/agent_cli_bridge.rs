@@ -2,6 +2,7 @@ use crate::core::agent_config::{AgentCommandConfig, AgentConfig, AgentProvider};
 use crate::core::agent_gateway::{
     AgentEvent, AgentEventSink, AgentFileWriteRequest, AgentGatewayError,
 };
+use crate::core::gateway_uni_event::{GatewayUniEventEmitter, GatewayUniEventType};
 use crate::core::harness_engine::PromptEnvelope;
 use crate::core::runtime_diagnostic::RuntimeDiagnostic;
 use crate::platform::stdio::{StdioLine, StdioLineProcess};
@@ -28,6 +29,7 @@ pub struct CliRunRequest<'a> {
     pub diagnostics: &'a [RuntimeDiagnostic],
     pub timeout_ms: u64,
     pub event_sink: Option<AgentEventSink>,
+    pub gateway_events: Option<GatewayUniEventEmitter>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -44,6 +46,14 @@ pub fn run_cli_agent(request: CliRunRequest<'_>) -> Result<CliRunOutput, AgentGa
     })?;
 
     let prompt = build_cli_prompt(request.envelope, request.staging_root, request.diagnostics);
+    if let Some(events) = &request.gateway_events {
+        events.session_started(&request.config.label);
+        events.turn_started(request.envelope.envelope_id.clone());
+        events.status(
+            "connecting",
+            format!("Starting {} CLI fallback", request.config.label),
+        );
+    }
     let prompt_file =
         write_cli_prompt_file(request.staging_root, &request.envelope.envelope_id, &prompt)?;
     let args = build_cli_args(
@@ -73,9 +83,18 @@ pub fn run_cli_agent(request: CliRunRequest<'_>) -> Result<CliRunOutput, AgentGa
         timeout_ms,
         &request.config.label,
         request.event_sink.as_ref(),
+        request.gateway_events.as_ref(),
     )?;
 
     if output.status_code != Some(0) {
+        if let Some(events) = &request.gateway_events {
+            let message = summarize_process_error(&output.stderr, &output.stdout);
+            events.error(format!(
+                "CLI agent exited with {:?}: {message}",
+                output.status_code
+            ));
+            events.turn_completed("error");
+        }
         return Err(AgentGatewayError::Adapter(format!(
             "CLI agent exited with {:?}: {}",
             output.status_code,
@@ -83,12 +102,30 @@ pub fn run_cli_agent(request: CliRunRequest<'_>) -> Result<CliRunOutput, AgentGa
         )));
     }
 
-    let mut file_writes = parse_agent_file_output(
-        &output.stdout,
+    let mut file_writes = collect_staged_files(
+        request.staging_root,
         &request.envelope.output_contract.files,
-        "CLI agent",
     )?;
+    let file_source = if file_writes.is_empty() {
+        file_writes = parse_agent_file_output(
+            &output.stdout,
+            &request.envelope.output_contract.files,
+            "CLI agent",
+        )?;
+        "cli-json-fallback"
+    } else {
+        "cli-stage"
+    };
     file_writes.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    if let Some(events) = &request.gateway_events {
+        for file in &file_writes {
+            events.emit(
+                GatewayUniEventType::FileWritten,
+                serde_json::json!({ "path": &file.relative_path, "source": file_source }),
+            );
+        }
+        events.turn_completed("ok");
+    }
     let events = vec![
         AgentEvent::Planning {
             message: format!("Ran {} CLI fallback", request.config.label),
@@ -104,6 +141,29 @@ pub fn run_cli_agent(request: CliRunRequest<'_>) -> Result<CliRunOutput, AgentGa
     })
 }
 
+fn collect_staged_files(
+    staging_root: &Path,
+    required_files: &[String],
+) -> Result<Vec<AgentFileWriteRequest>, AgentGatewayError> {
+    let mut files = Vec::new();
+    for relative_path in required_files {
+        let target = staging_root.join(relative_path);
+        if !target.exists() {
+            return Ok(Vec::new());
+        }
+        let contents = fs::read_to_string(&target).map_err(|error| {
+            AgentGatewayError::Adapter(format!(
+                "failed to read CLI output {relative_path}: {error}"
+            ))
+        })?;
+        files.push(AgentFileWriteRequest {
+            relative_path: relative_path.clone(),
+            contents,
+        });
+    }
+    Ok(files)
+}
+
 #[derive(Debug, Clone, Default)]
 struct StreamingProcessOutput {
     status_code: Option<i32>,
@@ -117,6 +177,7 @@ fn run_streaming_cli_process(
     timeout_ms: u64,
     agent_label: &str,
     event_sink: Option<&AgentEventSink>,
+    gateway_events: Option<&GatewayUniEventEmitter>,
 ) -> Result<StreamingProcessOutput, AgentGatewayError> {
     let mut process = StdioLineProcess::spawn_with_stdin(&spec, stdin_prompt).map_err(|error| {
         AgentGatewayError::Adapter(format!("failed to start CLI agent process: {error}"))
@@ -127,6 +188,9 @@ fn run_streaming_cli_process(
             message: format!("Started {agent_label} CLI process"),
         },
     );
+    if let Some(events) = gateway_events {
+        events.status("connecting", format!("Started {agent_label} CLI process"));
+    }
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut output = StreamingProcessOutput::default();
@@ -146,6 +210,10 @@ fn run_streaming_cli_process(
                     message: format!("{agent_label} CLI timed out after {timeout_ms} ms"),
                 },
             );
+            if let Some(events) = gateway_events {
+                events.error(format!("{agent_label} CLI timed out after {timeout_ms} ms"));
+                events.turn_completed("error");
+            }
             return Ok(output);
         }
 
@@ -155,13 +223,19 @@ fn run_streaming_cli_process(
                 AgentGatewayError::Adapter(format!("CLI output read failed: {error}"))
             })?
         {
-            handle_stream_line(line, &mut output, agent_label, event_sink);
+            handle_stream_line(line, &mut output, agent_label, event_sink, gateway_events);
         }
 
         if let Some(status) = process.try_wait().map_err(|error| {
             AgentGatewayError::Adapter(format!("CLI process wait failed: {error}"))
         })? {
-            drain_stream_lines(&mut process, &mut output, agent_label, event_sink)?;
+            drain_stream_lines(
+                &mut process,
+                &mut output,
+                agent_label,
+                event_sink,
+                gateway_events,
+            )?;
             output.status_code = status.code();
             return Ok(output);
         }
@@ -175,6 +249,7 @@ fn drain_stream_lines(
     output: &mut StreamingProcessOutput,
     agent_label: &str,
     event_sink: Option<&AgentEventSink>,
+    gateway_events: Option<&GatewayUniEventEmitter>,
 ) -> Result<(), AgentGatewayError> {
     let mut idle_reads = 0;
     loop {
@@ -185,7 +260,7 @@ fn drain_stream_lines(
             })? {
             Some(line) => {
                 idle_reads = 0;
-                handle_stream_line(line, output, agent_label, event_sink);
+                handle_stream_line(line, output, agent_label, event_sink, gateway_events);
             }
             None => {
                 idle_reads += 1;
@@ -202,11 +277,13 @@ fn handle_stream_line(
     output: &mut StreamingProcessOutput,
     agent_label: &str,
     event_sink: Option<&AgentEventSink>,
+    gateway_events: Option<&GatewayUniEventEmitter>,
 ) {
     match line {
         StdioLine::Stdout(line) => {
             output.stdout.push_str(&line);
             output.stdout.push('\n');
+            emit_gateway_stdout_line(&line, agent_label, gateway_events);
             if let Some(event) = stdout_line_event(&line, agent_label) {
                 emit_live_agent_event(event_sink, event);
             }
@@ -214,9 +291,148 @@ fn handle_stream_line(
         StdioLine::Stderr(line) => {
             output.stderr.push_str(&line);
             output.stderr.push('\n');
+            emit_gateway_stderr_line(&line, agent_label, gateway_events);
             if let Some(event) = stderr_line_event(&line, agent_label) {
                 emit_live_agent_event(event_sink, event);
             }
+        }
+    }
+}
+
+fn emit_gateway_stdout_line(
+    line: &str,
+    agent_label: &str,
+    gateway_events: Option<&GatewayUniEventEmitter>,
+) {
+    let Some(events) = gateway_events else {
+        return;
+    };
+    let trimmed = line.trim();
+    if trimmed.is_empty() || contains_prompt_payload(trimmed) {
+        return;
+    }
+
+    events.terminal_output("stdout", truncate_for_display(trimmed, 1_200));
+    if let Ok(value) = serde_json::from_str::<Value>(strip_json_fence(trimmed)) {
+        emit_gateway_json_event(&value, agent_label, events);
+    } else if !trimmed.contains("\"files\"") && !trimmed.contains("'files'") {
+        events.message_delta(truncate_for_display(trimmed, 500));
+    }
+}
+
+fn emit_gateway_stderr_line(
+    line: &str,
+    agent_label: &str,
+    gateway_events: Option<&GatewayUniEventEmitter>,
+) {
+    let Some(events) = gateway_events else {
+        return;
+    };
+    let trimmed = line.trim();
+    if trimmed.is_empty() || contains_prompt_payload(trimmed) {
+        return;
+    }
+
+    events.terminal_output("stderr", truncate_for_display(trimmed, 1_200));
+    events.status("terminal", format!("{agent_label} wrote to stderr"));
+}
+
+fn emit_gateway_json_event(value: &Value, agent_label: &str, events: &GatewayUniEventEmitter) {
+    if files_json_from_value(value).is_some() {
+        events.status(
+            "generating",
+            format!("{agent_label} returned generated file payload"),
+        );
+        return;
+    }
+
+    match value.get("type").and_then(Value::as_str) {
+        Some("thread.started") => {
+            events.status("connecting", format!("{agent_label} thread started"));
+        }
+        Some("turn.started") => {
+            events.emit(
+                GatewayUniEventType::TurnStarted,
+                serde_json::json!({ "source": "cli-json" }),
+            );
+        }
+        Some("turn.completed") | Some("result") => {
+            events.turn_completed("ok");
+        }
+        Some("turn.failed") | Some("error") => {
+            events.error(json_event_message(value, agent_label));
+        }
+        Some("item.started") | Some("item.updated") | Some("item.completed") => {
+            emit_gateway_json_item_event(value, events);
+        }
+        _ => {
+            if let Some(text) = value
+                .get("message")
+                .or_else(|| value.get("text"))
+                .and_then(Value::as_str)
+                .filter(|text| !contains_prompt_payload(text))
+            {
+                events.message_delta(truncate_for_display(text, 500));
+            }
+        }
+    }
+}
+
+fn emit_gateway_json_item_event(value: &Value, events: &GatewayUniEventEmitter) {
+    let Some(item) = value.get("item") else {
+        return;
+    };
+    let item_type = item.get("type").and_then(Value::as_str).unwrap_or("item");
+    match item_type {
+        "agent_message" => {
+            if let Some(text) = item.get("text").and_then(Value::as_str) {
+                if files_json_from_text(text).is_some() {
+                    events.status("generating", "Agent returned generated file payload");
+                } else if !contains_prompt_payload(text) {
+                    events.message_delta(truncate_for_display(text, 500));
+                }
+            }
+        }
+        "reasoning" => {
+            let text = item
+                .get("text")
+                .or_else(|| item.get("summary"))
+                .and_then(Value::as_str)
+                .unwrap_or("Reasoning updated");
+            events.reasoning_delta(truncate_for_display(text, 500));
+        }
+        "tool_call" | "tool_use" => {
+            let call_id = item
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("cli-tool-call");
+            let tool_name = item
+                .get("name")
+                .or_else(|| item.get("toolName"))
+                .and_then(Value::as_str)
+                .unwrap_or("tool");
+            events.emit(
+                GatewayUniEventType::ToolStarted,
+                serde_json::json!({ "callId": call_id, "toolName": tool_name, "input": item.get("input").cloned().unwrap_or(Value::Null) }),
+            );
+        }
+        "tool_result" => {
+            let call_id = item
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("cli-tool-call");
+            let tool_name = item
+                .get("name")
+                .or_else(|| item.get("toolName"))
+                .and_then(Value::as_str)
+                .unwrap_or("tool");
+            events.emit(
+                GatewayUniEventType::ToolCompleted,
+                serde_json::json!({ "callId": call_id, "toolName": tool_name, "status": "ok", "output": item.get("output").cloned().unwrap_or(Value::Null) }),
+            );
+        }
+        kind => {
+            events.status("agent-item", format!("Agent item {kind} updated"));
         }
     }
 }
@@ -674,9 +890,9 @@ fn build_cli_prompt(
     let envelope_json = serde_json::to_string_pretty(envelope).unwrap_or_else(|_| "{}".to_string());
     let diagnostic_summary = runtime_diagnostic_summary(diagnostics);
     format!(
-        "Generate a Sofvary app from this PromptEnvelope. Return exactly one JSON object with this shape: {{\"files\":[{{\"relativePath\":\"index.html\",\"contents\":\"...\"}}]}}. Required relative files: {}. Do not write outside this staging root: {}. Do not include Sofvary shell UI in generated app source.{}\nPromptEnvelope:\n{}",
-        envelope.output_contract.files.join(", "),
+        "Generate a Sofvary app from this PromptEnvelope. If your CLI environment can edit files, write each required file under this staging root as soon as it is ready instead of batching everything at the end: {}. Also return exactly one JSON object with this shape for Sofvary verification or fallback: {{\"files\":[{{\"relativePath\":\"index.html\",\"contents\":\"...\"}}]}}. Required relative files: {}. Do not write outside the staging root. Do not include Sofvary shell UI in generated app source.{}\nPromptEnvelope:\n{}",
         staging_root.display(),
+        envelope.output_contract.files.join(", "),
         diagnostic_summary,
         envelope_json
     )
@@ -702,6 +918,23 @@ fn files_schema() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::agent_config::AgentTransportKind;
+    use crate::core::gateway_uni_event::GatewayUniEvent;
+    use std::sync::{Arc, Mutex};
+
+    fn captured_gateway_emitter() -> (GatewayUniEventEmitter, Arc<Mutex<Vec<GatewayUniEvent>>>) {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let sink = {
+            let captured = captured.clone();
+            Arc::new(move |event| {
+                captured.lock().expect("events").push(event);
+            })
+        };
+        (
+            GatewayUniEventEmitter::new("thread-a", "codex", AgentTransportKind::Cli, sink),
+            captured,
+        )
+    }
 
     #[test]
     fn parses_valid_cli_files_json() {
@@ -750,6 +983,52 @@ mod tests {
         .expect("event");
 
         assert!(matches!(event, AgentEvent::TextDelta { text } if text == "Working on the layout"));
+    }
+
+    #[test]
+    fn gateway_stdout_maps_codex_jsonl_tool_events() {
+        let (gateway_events, captured) = captured_gateway_emitter();
+
+        emit_gateway_stdout_line(
+            "{\"type\":\"item.started\",\"item\":{\"id\":\"call-a\",\"type\":\"tool_call\",\"name\":\"read_file\",\"input\":{\"path\":\"src/App.tsx\"}}}",
+            "Codex",
+            Some(&gateway_events),
+        );
+
+        let events = captured.lock().expect("events");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, GatewayUniEventType::TerminalOutput);
+        assert_eq!(events[0].payload["stream"], "stdout");
+        assert_eq!(events[1].event_type, GatewayUniEventType::ToolStarted);
+        assert_eq!(events[1].payload["callId"], "call-a");
+        assert_eq!(events[1].payload["toolName"], "read_file");
+    }
+
+    #[test]
+    fn gateway_plain_stdout_falls_back_to_message_delta() {
+        let (gateway_events, captured) = captured_gateway_emitter();
+
+        emit_gateway_stdout_line("Working on the layout", "Codex", Some(&gateway_events));
+
+        let events = captured.lock().expect("events");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, GatewayUniEventType::TerminalOutput);
+        assert_eq!(events[1].event_type, GatewayUniEventType::MessageDelta);
+        assert_eq!(events[1].payload["text"], "Working on the layout");
+    }
+
+    #[test]
+    fn gateway_stderr_maps_to_terminal_output_and_status() {
+        let (gateway_events, captured) = captured_gateway_emitter();
+
+        emit_gateway_stderr_line("warning: retrying", "Codex", Some(&gateway_events));
+
+        let events = captured.lock().expect("events");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, GatewayUniEventType::TerminalOutput);
+        assert_eq!(events[0].payload["stream"], "stderr");
+        assert_eq!(events[1].event_type, GatewayUniEventType::StatusChanged);
+        assert_eq!(events[1].payload["phase"], "terminal");
     }
 
     #[test]

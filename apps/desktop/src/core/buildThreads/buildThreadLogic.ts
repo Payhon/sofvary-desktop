@@ -3,10 +3,14 @@ import type {
   BuildThreadEntry,
   BuildThreadSummary,
   BuildThreadStatus,
+  GatewayUniEvent,
   ShellState,
   WorkspaceSummary,
 } from "../../types";
-import { summarizeBuildThreadEntryForUser } from "./buildThreadPresentation";
+import {
+  gatewayEventFromEntry,
+  summarizeBuildThreadEntryForUser,
+} from "./buildThreadPresentation";
 
 type Translator = (key: string, params?: Record<string, string | number | boolean | null | undefined>, fallback?: string) => string;
 
@@ -34,6 +38,8 @@ export function formatBuildThreadStatus(thread: BuildThreadSummary | null, t: Tr
       return t("build.status.repairing");
     case "previewing":
       return t("build.status.previewing");
+    case "preview-blocked":
+      return t("build.status.previewBlocked");
     case "completed":
       return t("build.status.completed");
     case "failed":
@@ -49,9 +55,13 @@ export function summarizeBuildThreadError(thread: BuildThreadSummary | null): st
 }
 
 export function canContinueBuildThread(thread: BuildThreadSummary | null): boolean {
+  const continuableStatus =
+    thread?.status === "completed" ||
+    thread?.status === "failed" ||
+    thread?.status === "preview-blocked";
   return Boolean(
     thread &&
-      (thread.status === "completed" || thread.status === "failed") &&
+      continuableStatus &&
       (thread.appId || thread.workspaceId),
   );
 }
@@ -119,9 +129,12 @@ export function applyBuildThreadEventBatch(
     activeThreadDetail = applyBuildThreadSummaryToDetail(activeThreadDetail, summary);
   }
 
+  activeThreadDetail = ensureActiveThreadDetail(activeThreadDetail, threads, activeThreadId);
+
   for (const entry of batch.entries ?? []) {
     if (options.selectFirstThread && !activeThreadId) {
       activeThreadId = entry.threadId;
+      activeThreadDetail = ensureActiveThreadDetail(activeThreadDetail, threads, activeThreadId);
     }
     activeThreadDetail = appendEntryToBuildThreadDetail(activeThreadDetail, entry);
   }
@@ -131,6 +144,18 @@ export function applyBuildThreadEventBatch(
     activeThreadId,
     activeThreadDetail,
   };
+}
+
+function ensureActiveThreadDetail(
+  detail: BuildThreadDetail | null,
+  threads: BuildThreadSummary[],
+  activeThreadId: string | null,
+): BuildThreadDetail | null {
+  if (detail || !activeThreadId) {
+    return detail;
+  }
+  const summary = threads.find((thread) => thread.id === activeThreadId);
+  return summary ? { summary, entries: [] } : null;
 }
 
 export function appendBuildThreadEntry(
@@ -148,19 +173,7 @@ export function mergeBuildThreadEntries(entries: BuildThreadEntry[]): BuildThrea
     const normalized = normalizeThreadEntry(entry);
     const previous = merged[merged.length - 1];
     if (previous && canMergeEntries(previous, normalized)) {
-      merged[merged.length - 1] = {
-        ...previous,
-        timestamp: normalized.timestamp,
-        content: appendEntryContent(previous.content, normalized.content),
-        metadata: {
-          ...(previous.metadata ?? {}),
-          mergedEntryIds: [
-            ...asStringArray(previous.metadata?.mergedEntryIds),
-            previous.id,
-            normalized.id,
-          ],
-        },
-      };
+      merged[merged.length - 1] = mergeThreadEntries(previous, normalized);
       return merged;
     }
     merged.push(normalized);
@@ -191,6 +204,18 @@ export interface BuildOverlayViewModel {
   title: string;
   phase: string;
   detail: string | null;
+  eventLabel: string | null;
+  actionLabel: string;
+  steps: BuildOverlayStep[];
+}
+
+export type BuildOverlayStepId = "intent" | "agent" | "files" | "preview";
+export type BuildOverlayStepState = "done" | "active" | "pending" | "warning";
+
+export interface BuildOverlayStep {
+  id: BuildOverlayStepId;
+  label: string;
+  state: BuildOverlayStepState;
 }
 
 export function getBuildOverlayViewModel(
@@ -203,16 +228,21 @@ export function getBuildOverlayViewModel(
     return null;
   }
 
-  const phase =
-    thread?.status === "repairing"
-      ? t("build.status.repairing")
-      : state === "Planning"
-        ? t("build.overlay.planning")
-        : t("build.overlay.building");
+  const gatewayEvent = latestEntry ? gatewayEventFromEntry(latestEntry) : null;
+  const activeStep = getBuildOverlayActiveStep(state, thread, latestEntry, gatewayEvent);
+  const activeStepState: BuildOverlayStepState =
+    thread?.status === "preview-blocked" ? "warning" : "active";
+  const phase = getBuildOverlayPhase(state, thread, gatewayEvent, t);
   return {
     title: thread?.title ?? t("build.overlay.title"),
     phase,
-    detail: latestEntry ? summarizeThreadEntryContent(latestEntry, 180) : null,
+    detail: getBuildOverlayDetail(thread, latestEntry, gatewayEvent, t),
+    eventLabel: getBuildOverlayEventLabel(gatewayEvent, t) ?? thread?.agentId ?? null,
+    actionLabel:
+      thread?.status === "preview-blocked"
+        ? t("build.overlay.repairPreview")
+        : t("build.overlay.openSession"),
+    steps: getBuildOverlaySteps(activeStep, activeStepState, t),
   };
 }
 
@@ -224,6 +254,7 @@ function fallbackBuildThreadT(key: string): string {
     "build.status.building": "Creating software",
     "build.status.repairing": "Auto-repairing runtime issue",
     "build.status.previewing": "Opening preview",
+    "build.status.previewBlocked": "Preview environment needs repair",
     "build.status.completed": "Completed",
     "build.status.failed": "Build failed",
     "build.status.canceled": "Canceled",
@@ -236,6 +267,23 @@ function fallbackBuildThreadT(key: string): string {
     "build.overlay.title": "Sofvary is preparing new software",
     "build.overlay.planning": "Analyzing intent",
     "build.overlay.building": "Creating software",
+    "build.overlay.intent": "Understanding intent",
+    "build.overlay.agent": "Working with Agent",
+    "build.overlay.files": "Writing generated files",
+    "build.overlay.preview": "Starting preview",
+    "build.overlay.previewBlocked": "Preview environment not ready",
+    "build.overlay.repairPreview": "Repair preview environment",
+    "build.overlay.tool": "Running Agent tool",
+    "build.overlay.terminal": "Reading terminal output",
+    "build.overlay.approval": "Reviewing approval",
+    "build.overlay.reasoning": "Planning implementation",
+    "build.overlay.gateway": "Agent Gateway",
+    "build.overlay.terminalDetail": "Terminal detail is available in the Stealth UI session.",
+    "build.overlay.approvalDetail": "Approval details are available in the Stealth UI session.",
+    "build.overlay.reasoningDetail": "Reasoning is folded in the Stealth UI session.",
+    "build.overlay.messageDetail": "Agent output is streaming in the Stealth UI session.",
+    "build.overlay.previewBlockedDetail": "Software assets are ready. Open the session to repair the Sofvary-managed runtime environment.",
+    "build.overlay.openSession": "Open session",
   };
   return fallback[key] ?? key;
 }
@@ -249,6 +297,172 @@ export function summarizeThreadEntryContent(
   maxLength = 180,
 ): string {
   return summarizeBuildThreadEntryForUser(entry, maxLength);
+}
+
+function getBuildOverlayActiveStep(
+  state: ShellState,
+  thread: BuildThreadSummary | null,
+  latestEntry: BuildThreadEntry | null,
+  gatewayEvent: GatewayUniEvent | null,
+): BuildOverlayStepId {
+  if (thread?.status === "previewing") {
+    return "preview";
+  }
+  if (thread?.status === "preview-blocked") {
+    return "preview";
+  }
+  if (state === "Planning" || (!latestEntry && (thread?.status === "queued" || thread?.status === "planning"))) {
+    return "intent";
+  }
+  if (gatewayEvent?.type === "file.write.requested" || gatewayEvent?.type === "file.written") {
+    return "files";
+  }
+  if (latestEntry?.kind === "file") {
+    return "files";
+  }
+  return "agent";
+}
+
+function getBuildOverlayPhase(
+  state: ShellState,
+  thread: BuildThreadSummary | null,
+  gatewayEvent: GatewayUniEvent | null,
+  t: Translator,
+): string {
+  if (thread?.status === "repairing") {
+    return t("build.status.repairing");
+  }
+  if (thread?.status === "preview-blocked") {
+    return t("build.overlay.previewBlocked");
+  }
+  if (!gatewayEvent) {
+    return state === "Planning" ? t("build.overlay.planning") : t("build.overlay.building");
+  }
+
+  switch (gatewayEvent.type) {
+    case "tool.started":
+    case "tool.delta":
+    case "tool.completed":
+      return t("build.overlay.tool");
+    case "terminal.output":
+      return t("build.overlay.terminal");
+    case "approval.requested":
+    case "approval.resolved":
+      return t("build.overlay.approval");
+    case "file.write.requested":
+    case "file.written":
+      return t("build.overlay.files");
+    case "reasoning.delta":
+      return t("build.overlay.reasoning");
+    case "status.changed":
+      return formatGatewayStatusPhase(gatewayEvent, t);
+    case "turn.completed":
+      return t("build.overlay.preview");
+    case "error":
+      return t("build.status.failed");
+    case "session.started":
+    case "turn.started":
+      return t("build.overlay.agent");
+    case "message.delta":
+      return t("build.overlay.building");
+  }
+}
+
+function getBuildOverlayDetail(
+  thread: BuildThreadSummary | null,
+  latestEntry: BuildThreadEntry | null,
+  gatewayEvent: GatewayUniEvent | null,
+  t: Translator,
+): string | null {
+  if (thread?.status === "preview-blocked") {
+    return thread.previewIssue?.summary ?? t("build.overlay.previewBlockedDetail");
+  }
+  if (!latestEntry) {
+    return null;
+  }
+  if (!gatewayEvent) {
+    if (latestEntry.kind === "assistant") {
+      return t("build.overlay.messageDetail");
+    }
+    return summarizeThreadEntryContent(latestEntry, 180);
+  }
+  switch (gatewayEvent.type) {
+    case "terminal.output":
+      return t("build.overlay.terminalDetail");
+    case "approval.requested":
+    case "approval.resolved":
+      return t("build.overlay.approvalDetail");
+    case "reasoning.delta":
+      return t("build.overlay.reasoningDetail");
+    case "message.delta":
+      return t("build.overlay.messageDetail");
+    case "status.changed":
+      return payloadString(gatewayEvent, "detail") ?? summarizeThreadEntryContent(latestEntry, 180);
+    default:
+      return summarizeThreadEntryContent(latestEntry, 180);
+  }
+}
+
+function getBuildOverlayEventLabel(gatewayEvent: GatewayUniEvent | null, t: Translator): string | null {
+  if (!gatewayEvent) {
+    return null;
+  }
+  switch (gatewayEvent.type) {
+    case "tool.started":
+    case "tool.delta":
+    case "tool.completed":
+      return payloadString(gatewayEvent, "toolName") ?? t("build.overlay.tool");
+    case "terminal.output":
+      return payloadString(gatewayEvent, "stream") ?? t("build.overlay.terminal");
+    case "approval.requested":
+    case "approval.resolved":
+      return t("build.overlay.approval");
+    case "file.write.requested":
+    case "file.written":
+      return payloadString(gatewayEvent, "path") ?? t("build.overlay.files");
+    default:
+      return t("build.overlay.gateway");
+  }
+}
+
+function getBuildOverlaySteps(
+  activeStep: BuildOverlayStepId,
+  activeStepState: BuildOverlayStepState,
+  t: Translator,
+): BuildOverlayStep[] {
+  const steps: Array<{ id: BuildOverlayStepId; label: string }> = [
+    { id: "intent", label: t("build.overlay.intent") },
+    { id: "agent", label: t("build.overlay.agent") },
+    { id: "files", label: t("build.overlay.files") },
+    { id: "preview", label: t("build.overlay.preview") },
+  ];
+  const activeIndex = steps.findIndex((step) => step.id === activeStep);
+  return steps.map((step, index) => ({
+    ...step,
+    state: index < activeIndex ? "done" : index === activeIndex ? activeStepState : "pending",
+  }));
+}
+
+function formatGatewayStatusPhase(event: GatewayUniEvent, t: Translator): string {
+  const phase = payloadString(event, "phase");
+  switch (phase) {
+    case "connecting":
+    case "session":
+      return t("build.overlay.agent");
+    case "planning":
+      return t("build.overlay.reasoning");
+    case "generating":
+    case "terminal":
+    case "agent-item":
+      return t("build.overlay.building");
+    default:
+      return phase ?? t("build.overlay.building");
+  }
+}
+
+function payloadString(event: GatewayUniEvent, key: string): string | null {
+  const value = event.payload[key];
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function normalizeThreadEntry(entry: BuildThreadEntry): BuildThreadEntry {
@@ -271,7 +485,87 @@ function stripAgentMessagePrefix(content: string): string {
 }
 
 function canMergeEntries(left: BuildThreadEntry, right: BuildThreadEntry): boolean {
-  return left.threadId === right.threadId && left.kind === "assistant" && right.kind === "assistant";
+  const leftGatewayEvent = gatewayEventFromEntry(left);
+  const rightGatewayEvent = gatewayEventFromEntry(right);
+  return (
+    left.threadId === right.threadId &&
+    left.kind === "assistant" &&
+    right.kind === "assistant" &&
+    ((!leftGatewayEvent && !rightGatewayEvent) ||
+      Boolean(
+        leftGatewayEvent &&
+          rightGatewayEvent &&
+          canMergeGatewayMessageDeltas(leftGatewayEvent, rightGatewayEvent),
+      ))
+  );
+}
+
+function mergeThreadEntries(left: BuildThreadEntry, right: BuildThreadEntry): BuildThreadEntry {
+  const leftGatewayEvent = gatewayEventFromEntry(left);
+  const rightGatewayEvent = gatewayEventFromEntry(right);
+  if (
+    leftGatewayEvent &&
+    rightGatewayEvent &&
+    canMergeGatewayMessageDeltas(leftGatewayEvent, rightGatewayEvent)
+  ) {
+    return mergeGatewayMessageDeltaEntries(left, right, leftGatewayEvent, rightGatewayEvent);
+  }
+
+  return {
+    ...left,
+    timestamp: right.timestamp,
+    content: appendEntryContent(left.content, right.content),
+    metadata: mergedEntryMetadata(left, right),
+  };
+}
+
+function canMergeGatewayMessageDeltas(
+  left: GatewayUniEvent,
+  right: GatewayUniEvent,
+): boolean {
+  return (
+    left.type === "message.delta" &&
+    right.type === "message.delta" &&
+    left.threadId === right.threadId &&
+    left.agentId === right.agentId &&
+    left.transport === right.transport
+  );
+}
+
+function mergeGatewayMessageDeltaEntries(
+  left: BuildThreadEntry,
+  right: BuildThreadEntry,
+  leftEvent: GatewayUniEvent,
+  rightEvent: GatewayUniEvent,
+): BuildThreadEntry {
+  const mergedText = appendStreamingContent(
+    gatewayDeltaText(leftEvent) ?? left.content,
+    gatewayDeltaText(rightEvent) ?? right.content,
+  );
+  const payload: Record<string, unknown> = {
+    ...leftEvent.payload,
+    ...rightEvent.payload,
+    text: mergedText,
+  };
+
+  if (hasPayloadString(leftEvent, "content") || hasPayloadString(rightEvent, "content")) {
+    payload.content = mergedText;
+  }
+
+  return {
+    ...left,
+    timestamp: right.timestamp,
+    content: appendStreamingContent(left.content, right.content),
+    metadata: {
+      ...mergedEntryMetadata(left, right),
+      gatewayUniEvent: {
+        ...leftEvent,
+        timestamp: rightEvent.timestamp,
+        sequence: rightEvent.sequence,
+        payload,
+      },
+    },
+  };
 }
 
 function appendEntryContent(left: string, right: string): string {
@@ -282,6 +576,44 @@ function appendEntryContent(left: string, right: string): string {
     return `${left}${next}`;
   }
   return `${left} ${next}`;
+}
+
+function appendStreamingContent(left: string, right: string): string {
+  if (!left) return right;
+  if (!right) return left;
+  return `${left}${right}`;
+}
+
+function gatewayDeltaText(event: GatewayUniEvent): string | null {
+  const text = event.payload.text;
+  if (typeof text === "string") return text;
+  const content = event.payload.content;
+  if (typeof content === "string") return content;
+  return null;
+}
+
+function hasPayloadString(event: GatewayUniEvent, key: string): boolean {
+  return typeof event.payload[key] === "string";
+}
+
+function mergedEntryMetadata(
+  left: BuildThreadEntry,
+  right: BuildThreadEntry,
+): Record<string, unknown> {
+  return {
+    ...(left.metadata ?? {}),
+    ...(right.metadata ?? {}),
+    mergedEntryIds: uniqueStrings([
+      ...asStringArray(left.metadata?.mergedEntryIds),
+      left.id,
+      ...asStringArray(right.metadata?.mergedEntryIds),
+      right.id,
+    ]),
+  };
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return values.filter((value, index) => values.indexOf(value) === index);
 }
 
 function asStringArray(value: unknown): string[] {

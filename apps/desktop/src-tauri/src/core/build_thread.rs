@@ -1,4 +1,4 @@
-use crate::core::runtime_manager::RuntimePreview;
+use crate::core::runtime_manager::{RuntimePreview, RuntimePreviewIssue};
 use crate::core::workspace_types::{RuntimeKind, RuntimeMode};
 use crate::platform::{current_adapter, PlatformAdapter, PlatformError};
 use chrono::Utc;
@@ -33,6 +33,7 @@ pub enum BuildThreadStatus {
     Building,
     Repairing,
     Previewing,
+    PreviewBlocked,
     Completed,
     Failed,
     Canceled,
@@ -67,6 +68,8 @@ pub struct BuildThreadSummary {
     pub updated_at: String,
     #[serde(default)]
     pub preview: Option<RuntimePreview>,
+    #[serde(default)]
+    pub preview_issue: Option<RuntimePreviewIssue>,
     #[serde(default)]
     pub error: Option<String>,
 }
@@ -106,6 +109,7 @@ pub struct BuildThreadUpdate {
     pub workspace_id: Option<Option<String>>,
     pub app_id: Option<Option<String>>,
     pub preview: Option<Option<RuntimePreview>>,
+    pub preview_issue: Option<Option<RuntimePreviewIssue>>,
     pub error: Option<Option<String>>,
 }
 
@@ -144,6 +148,7 @@ impl BuildThreadStore {
             created_at: now.clone(),
             updated_at: now.clone(),
             preview: None,
+            preview_issue: None,
             error: None,
         };
         let entry = self.entry(
@@ -268,6 +273,9 @@ impl BuildThreadStore {
         }
         if let Some(preview) = update.preview {
             detail.summary.preview = preview;
+        }
+        if let Some(preview_issue) = update.preview_issue {
+            detail.summary.preview_issue = preview_issue;
         }
         if let Some(error) = update.error {
             detail.summary.error = error;

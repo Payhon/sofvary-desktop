@@ -1367,6 +1367,7 @@ fn merged_react_sqlite_policy(harness_pack: &HarnessPackManifest) -> HarnessPoli
         "The frontend calls /api/health and /api/customers through relative /api/* URLs."
             .to_string(),
         "The Node API binds to 127.0.0.1 only and owns every SQLite operation.".to_string(),
+        "Use the managed sql.js dependency or the Sofvary better-sqlite3 compatibility API only; do not add native SQLite packages or package install scripts.".to_string(),
         "SQL statements use prepared statements for user-controlled values.".to_string(),
         "The SQLite database file stays at generated/data/app.sqlite.".to_string(),
         "Keep Sofvary shell UI out of generated app source.".to_string(),

@@ -236,6 +236,15 @@ export interface RuntimePreview {
   promptEnvelopeSummary: PromptEnvelopeSummary;
 }
 
+export interface RuntimePreviewIssue {
+  kind: string;
+  runtimeKind: RuntimeKind;
+  summary: string;
+  diagnostic?: Record<string, unknown> | null;
+  sourceDetail?: string | null;
+  repairAction?: "install-runtime-environment" | "retry-preview" | string;
+}
+
 export interface RuntimeIntentSelection {
   runtimeKind: RuntimeKind;
   softwareType: string;
@@ -252,6 +261,7 @@ export type BuildThreadStatus =
   | "building"
   | "repairing"
   | "previewing"
+  | "preview-blocked"
   | "completed"
   | "failed"
   | "canceled";
@@ -277,7 +287,13 @@ export interface BuildThreadSummary {
   createdAt: string;
   updatedAt: string;
   preview?: RuntimePreview | null;
+  previewIssue?: RuntimePreviewIssue | null;
   error?: string | null;
+}
+
+export interface BuildThreadPreviewRetryResult {
+  thread: BuildThreadSummary;
+  preview: RuntimePreview;
 }
 
 export interface BuildThreadEntry {
@@ -292,6 +308,34 @@ export interface BuildThreadEntry {
 export interface BuildThreadDetail {
   summary: BuildThreadSummary;
   entries: BuildThreadEntry[];
+}
+
+export type GatewayUniEventType =
+  | "session.started"
+  | "turn.started"
+  | "message.delta"
+  | "reasoning.delta"
+  | "tool.started"
+  | "tool.delta"
+  | "tool.completed"
+  | "approval.requested"
+  | "approval.resolved"
+  | "terminal.output"
+  | "file.write.requested"
+  | "file.written"
+  | "status.changed"
+  | "turn.completed"
+  | "error";
+
+export interface GatewayUniEvent {
+  eventId: string;
+  threadId: string;
+  timestamp: string;
+  agentId: string;
+  transport: AgentTransportKind;
+  sequence: number;
+  type: GatewayUniEventType;
+  payload: Record<string, unknown>;
 }
 
 export type LlmProviderKind =

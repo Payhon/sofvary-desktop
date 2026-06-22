@@ -16,6 +16,7 @@ use crate::core::desktop_widget_runtime::{
 use crate::core::file_processor_runtime::{
     FileProcessorRuntime, FileProcessorRuntimeError, FileProcessorRuntimeServer,
 };
+use crate::core::gateway_uni_event::{GatewayUniEventEmitter, GatewayUniEventSink};
 use crate::core::harness_engine::{
     summarize_prompt_envelope, HarnessEngine, HarnessEngineError, PromptEnvelope,
     PromptEnvelopeSummary,
@@ -36,6 +37,7 @@ use crate::core::react_vite_runtime::{
 use crate::core::runtime_diagnostic::{
     diagnostic_from_file_processor_error, diagnostic_from_react_project_error,
     diagnostic_from_react_sqlite_error, diagnostic_from_react_vite_error, RuntimeDiagnostic,
+    RuntimeDiagnosticCategory, RuntimeDiagnosticRepairTarget,
 };
 use crate::core::static_html_runtime::{
     StaticHtmlRuntime, StaticRuntimeError, StaticRuntimeServer,
@@ -58,6 +60,26 @@ pub struct RuntimePreview {
     pub runtime_mode: RuntimeMode,
     pub preview_url: String,
     pub logs: Vec<String>,
+    pub manifest: AppBoxManifest,
+    pub prompt_envelope_summary: PromptEnvelopeSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimePreviewIssue {
+    pub kind: String,
+    pub runtime_kind: RuntimeKind,
+    pub summary: String,
+    pub diagnostic: RuntimeDiagnostic,
+    pub source_detail: String,
+    pub repair_action: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeAssetsReady {
+    pub app_id: String,
+    pub runtime_kind: RuntimeKind,
+    pub runtime_mode: RuntimeMode,
     pub manifest: AppBoxManifest,
     pub prompt_envelope_summary: PromptEnvelopeSummary,
 }
@@ -103,6 +125,7 @@ pub enum RuntimeManagerError {
         summary: String,
         diagnostic: RuntimeDiagnostic,
         source_detail: String,
+        assets: Option<Box<RuntimeAssetsReady>>,
     },
     #[error("runtime lock poisoned")]
     LockPoisoned,
@@ -160,6 +183,8 @@ enum RuntimeAgentSelection {
     Configured {
         config: AgentConfig,
         event_sink: Option<AgentEventSink>,
+        gateway_thread_id: Option<String>,
+        gateway_event_sink: Option<GatewayUniEventSink>,
     },
 }
 
@@ -245,6 +270,8 @@ impl RuntimeManager {
             &RuntimeAgentSelection::Configured {
                 config: agent_config.clone(),
                 event_sink: None,
+                gateway_thread_id: None,
+                gateway_event_sink: None,
             },
         )
     }
@@ -258,6 +285,8 @@ impl RuntimeManager {
         approvals: &PolicyApprovalSet,
         agent_config: &AgentConfig,
         event_sink: Option<AgentEventSink>,
+        gateway_thread_id: Option<String>,
+        gateway_event_sink: Option<GatewayUniEventSink>,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
         self.build_and_preview_app_with_agent_selection(
             requirement,
@@ -268,6 +297,8 @@ impl RuntimeManager {
             &RuntimeAgentSelection::Configured {
                 config: agent_config.clone(),
                 event_sink,
+                gateway_thread_id,
+                gateway_event_sink,
             },
         )
     }
@@ -282,6 +313,8 @@ impl RuntimeManager {
         approvals: &PolicyApprovalSet,
         agent_config: &AgentConfig,
         event_sink: Option<AgentEventSink>,
+        gateway_thread_id: Option<String>,
+        gateway_event_sink: Option<GatewayUniEventSink>,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
         let adapter = current_adapter();
         let manifest =
@@ -309,6 +342,8 @@ impl RuntimeManager {
             &RuntimeAgentSelection::Configured {
                 config: agent_config.clone(),
                 event_sink,
+                gateway_thread_id,
+                gateway_event_sink,
             },
         )
     }
@@ -783,6 +818,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
             agent_session,
+            runtime_mode,
             || {
                 self.react_vite_runtime
                     .start_workspace_with_envelope_with_policy(
@@ -993,7 +1029,7 @@ impl RuntimeManager {
         &self,
         manifest: AppBoxManifest,
         runtime_mode: RuntimeMode,
-        _workspace_manager: &WorkspaceManager,
+        workspace_manager: &WorkspaceManager,
         runtime_pack: &RuntimePackManifest,
         harness_pack: &HarnessPackManifest,
         approvals: &PolicyApprovalSet,
@@ -1005,6 +1041,7 @@ impl RuntimeManager {
             harness_pack,
         )?;
         let prompt_envelope_summary = summarize_prompt_envelope(&prompt_envelope);
+        workspace_manager.prepare_react_sqlite_workspace_for_preview(&manifest)?;
         self.enforce_runtime_start(&manifest, "react-sqlite", approvals)?;
         let server = self
             .react_sqlite_runtime
@@ -1080,6 +1117,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
             agent_session,
+            runtime_mode,
             || {
                 self.ai_agent_app_runtime
                     .start_workspace_with_envelope_with_policy(
@@ -1350,6 +1388,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
             agent_session,
+            runtime_mode,
             || {
                 self.markdown_knowledge_runtime
                     .start_workspace_with_envelope_with_policy(
@@ -1495,6 +1534,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
             agent_session,
+            runtime_mode,
             || {
                 self.data_table_runtime
                     .start_workspace_with_envelope_with_policy(
@@ -1640,6 +1680,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
             agent_session,
+            runtime_mode,
             || {
                 self.file_processor_runtime
                     .start_workspace_with_envelope_with_policy(
@@ -1784,6 +1825,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
             agent_session,
+            runtime_mode,
             || {
                 self.desktop_widget_runtime
                     .start_workspace_with_envelope_with_policy(
@@ -1985,6 +2027,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
             agent_session,
+            runtime_mode,
             || {
                 self.react_vite_runtime
                     .start_workspace_with_envelope_with_policy(
@@ -2142,6 +2185,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
             agent_session,
+            runtime_mode,
             || {
                 self.ai_agent_app_runtime
                     .start_workspace_with_envelope_with_policy(
@@ -2290,6 +2334,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
             agent_session,
+            runtime_mode,
             || {
                 self.markdown_knowledge_runtime
                     .start_workspace_with_envelope_with_policy(
@@ -2377,6 +2422,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
             agent_session,
+            runtime_mode,
             || {
                 self.data_table_runtime
                     .start_workspace_with_envelope_with_policy(
@@ -2464,6 +2510,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
             agent_session,
+            runtime_mode,
             || {
                 self.file_processor_runtime
                     .start_workspace_with_envelope_with_policy(
@@ -2551,6 +2598,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
             agent_session,
+            runtime_mode,
             || {
                 self.desktop_widget_runtime
                     .start_workspace_with_envelope_with_policy(
@@ -2641,6 +2689,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
             agent_session,
+            runtime_mode,
             || {
                 self.react_sqlite_runtime
                     .start_workspace_with_envelope_with_policy(
@@ -2727,6 +2776,7 @@ impl RuntimeManager {
         approvals: &PolicyApprovalSet,
         agent_selection: &RuntimeAgentSelection,
         agent_session: AgentSession,
+        runtime_mode: RuntimeMode,
         start_runtime: StartRuntime,
         classify_error: ClassifyError,
         map_error: MapError,
@@ -2746,6 +2796,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
             agent_session,
+            runtime_mode,
             start_runtime,
             classify_error,
             map_error,
@@ -2771,6 +2822,7 @@ impl RuntimeManager {
         approvals: &PolicyApprovalSet,
         agent_selection: &RuntimeAgentSelection,
         mut agent_session: AgentSession,
+        runtime_mode: RuntimeMode,
         mut start_runtime: StartRuntime,
         classify_error: ClassifyError,
         map_error: MapError,
@@ -2814,10 +2866,17 @@ impl RuntimeManager {
                             });
                         }
                         let source_detail = map_error(error).to_string();
+                        let assets = preview_blocked_assets(
+                            manifest,
+                            initial_envelope,
+                            runtime_mode,
+                            &diagnostic,
+                        );
                         return Err(RuntimeManagerError::RuntimeDiagnosticBlocked {
                             summary: diagnostic.summary(),
                             diagnostic,
                             source_detail,
+                            assets,
                         });
                     }
 
@@ -2918,7 +2977,12 @@ impl RuntimeManager {
                     approvals,
                     context,
                 )?),
-            RuntimeAgentSelection::Configured { config, event_sink } => {
+            RuntimeAgentSelection::Configured {
+                config,
+                event_sink,
+                gateway_thread_id,
+                gateway_event_sink,
+            } => {
                 let mut adapter = ConfiguredAgentAdapter::new(
                     config.clone(),
                     manifest.clone(),
@@ -2926,6 +2990,24 @@ impl RuntimeManager {
                 );
                 if let Some(event_sink) = event_sink.clone() {
                     adapter = adapter.with_event_sink(event_sink);
+                }
+                if let (Some(thread_id), Some(gateway_event_sink)) =
+                    (gateway_thread_id.clone(), gateway_event_sink.clone())
+                {
+                    let transport =
+                        if config.provider == crate::core::agent_config::AgentProvider::SofvaryPi {
+                            crate::core::agent_config::AgentTransportKind::PiRpc
+                        } else if config.acp.is_some() {
+                            crate::core::agent_config::AgentTransportKind::Acp
+                        } else {
+                            crate::core::agent_config::AgentTransportKind::Cli
+                        };
+                    adapter = adapter.with_gateway_event_emitter(GatewayUniEventEmitter::new(
+                        thread_id,
+                        config.id.clone(),
+                        transport,
+                        gateway_event_sink,
+                    ));
                 }
                 Ok(AgentGateway::new(adapter).run_with_policy_and_context(
                     manifest,
@@ -3071,6 +3153,58 @@ fn preview_existing_logs(
     .concat()
 }
 
+fn preview_blocked_assets(
+    manifest: &AppBoxManifest,
+    initial_envelope: &PromptEnvelope,
+    runtime_mode: RuntimeMode,
+    diagnostic: &RuntimeDiagnostic,
+) -> Option<Box<RuntimeAssetsReady>> {
+    if !diagnostic_preserves_generated_assets(diagnostic) {
+        return None;
+    }
+    Some(Box::new(RuntimeAssetsReady {
+        app_id: manifest.app_id.clone(),
+        runtime_kind: diagnostic.runtime_kind,
+        runtime_mode,
+        manifest: manifest.clone(),
+        prompt_envelope_summary: summarize_prompt_envelope(initial_envelope),
+    }))
+}
+
+fn diagnostic_preserves_generated_assets(diagnostic: &RuntimeDiagnostic) -> bool {
+    matches!(
+        diagnostic.repairable_by,
+        RuntimeDiagnosticRepairTarget::Sofvary
+    ) || matches!(
+        diagnostic.category,
+        RuntimeDiagnosticCategory::Environment | RuntimeDiagnosticCategory::RuntimeInfra
+    )
+}
+
+pub fn runtime_preview_issue_from_diagnostic(
+    runtime_kind: RuntimeKind,
+    summary: String,
+    diagnostic: RuntimeDiagnostic,
+    source_detail: String,
+) -> RuntimePreviewIssue {
+    let lower_source = source_detail.to_lowercase();
+    let kind = if lower_source.contains("sidecar") && lower_source.contains("pnpm") {
+        "managed-pnpm-missing"
+    } else if lower_source.contains("sidecar") {
+        "managed-sidecar-missing"
+    } else {
+        "runtime-environment"
+    };
+    RuntimePreviewIssue {
+        kind: kind.to_string(),
+        runtime_kind,
+        summary,
+        diagnostic,
+        source_detail,
+        repair_action: "install-runtime-environment".to_string(),
+    }
+}
+
 fn resolve_single_workspace_runtime_and_harness(
     pack_manager: &PackManager,
     lockfile: &crate::core::workspace_types::SofvaryLockfile,
@@ -3108,7 +3242,9 @@ fn resolve_single_workspace_runtime_and_harness(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::runtime_diagnostic::diagnostic_from_command_failure;
+    use crate::core::runtime_diagnostic::{
+        diagnostic_from_command_failure, RuntimeDiagnosticRepairTarget,
+    };
     use crate::core::workspace_types::{WorkspaceConstraints, WorkspacePaths, WorkspacePreview};
     use std::cell::Cell;
     use std::fs;
@@ -3139,6 +3275,7 @@ mod tests {
                 &PolicyApprovalSet::default(),
                 &RuntimeAgentSelection::Mock,
                 agent_session,
+                RuntimeMode::Dev,
                 || {
                     let attempt = attempts.get();
                     attempts.set(attempt + 1);
@@ -3187,6 +3324,7 @@ mod tests {
                     envelope_id: envelope.envelope_id.clone(),
                     events: Vec::new(),
                 },
+                RuntimeMode::Dev,
                 || Ok::<(), String>(()),
                 |error| diagnostic_from_command_failure(
                     RuntimeKind::ReactVite,
@@ -3232,6 +3370,7 @@ mod tests {
                 &PolicyApprovalSet::default(),
                 &RuntimeAgentSelection::Mock,
                 agent_session,
+                RuntimeMode::Dev,
                 || {
                     let attempt = attempts.get();
                     attempts.set(attempt + 1);
@@ -3263,6 +3402,72 @@ mod tests {
     }
 
     #[test]
+    fn runtime_diagnostic_blocked_preserves_assets_for_sofvary_environment() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest = test_manifest(temp.path());
+        let workspace_manager = WorkspaceManager::new();
+        let manager = RuntimeManager::new();
+        let envelope = test_react_vite_envelope();
+        let agent_session = AgentSession {
+            session_id: "agent_session_initial".to_string(),
+            adapter: crate::core::agent_gateway::AgentAdapterKind::Mock,
+            app_id: manifest.app_id.clone(),
+            envelope_id: envelope.envelope_id.clone(),
+            events: Vec::new(),
+        };
+
+        let result: Result<((), AgentSession), RuntimeManagerError> = manager
+            .start_runtime_with_repair(
+                &manifest,
+                "Build a task board",
+                &envelope,
+                &workspace_manager,
+                &PolicyApprovalSet::default(),
+                &RuntimeAgentSelection::Mock,
+                agent_session,
+                RuntimeMode::Dev,
+                || Err("sidecar executable 'pnpm' was not found".to_string()),
+                |error| {
+                    diagnostic_from_command_failure(
+                        RuntimeKind::ReactVite,
+                        "install",
+                        None,
+                        "",
+                        error,
+                        None,
+                    )
+                },
+                RuntimeManagerError::InvalidContinuation,
+                |repair_prompt| {
+                    let mut repair_envelope = envelope.clone();
+                    repair_envelope.user_intent = repair_prompt.to_string();
+                    Ok(repair_envelope)
+                },
+            );
+
+        match result {
+            Err(RuntimeManagerError::RuntimeDiagnosticBlocked {
+                diagnostic,
+                assets: Some(assets),
+                ..
+            }) => {
+                assert_eq!(
+                    diagnostic.repairable_by,
+                    RuntimeDiagnosticRepairTarget::Sofvary
+                );
+                assert_eq!(assets.app_id, manifest.app_id);
+                assert_eq!(assets.runtime_kind, RuntimeKind::ReactVite);
+                assert_eq!(assets.runtime_mode, RuntimeMode::Dev);
+                assert!(assets
+                    .prompt_envelope_summary
+                    .runtime
+                    .contains("react-vite"));
+            }
+            other => panic!("expected preview-blocking diagnostic with assets, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn runtime_repair_can_fallback_after_two_agent_attempts() {
         let temp = tempfile::tempdir().expect("tempdir");
         let manifest = test_manifest(temp.path());
@@ -3288,6 +3493,7 @@ mod tests {
                 &PolicyApprovalSet::default(),
                 &RuntimeAgentSelection::Mock,
                 agent_session,
+                RuntimeMode::Dev,
                 || {
                     let attempt = attempts.get();
                     attempts.set(attempt + 1);

@@ -1,6 +1,7 @@
 import { safeInvoke } from "../../platform/tauriClient";
 import type {
   BuildThreadDetail,
+  BuildThreadPreviewRetryResult,
   BuildThreadSummary,
   PolicyApprovalSet,
   RuntimeIntentSelection,
@@ -50,4 +51,13 @@ export async function continueBuildThread(
 
 export async function cancelBuildThread(threadId: string): Promise<BuildThreadSummary> {
   return safeInvoke<BuildThreadSummary>("cancel_build_thread", { threadId });
+}
+
+export async function retryBuildThreadPreview(
+  threadId: string,
+  policyApprovals?: PolicyApprovalSet,
+): Promise<BuildThreadPreviewRetryResult> {
+  return safeInvoke<BuildThreadPreviewRetryResult>("retry_build_thread_preview", {
+    payload: { threadId, policyApprovals },
+  });
 }

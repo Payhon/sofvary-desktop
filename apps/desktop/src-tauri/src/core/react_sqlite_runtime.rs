@@ -195,6 +195,7 @@ impl ReactSqliteRuntime {
         )?;
 
         run_dependency_install(adapter.as_ref(), install_spec, approvals, &log_path)?;
+        ensure_better_sqlite3_compat_shim(manifest)?;
 
         enforce_command("api", &api_spec, approvals)?;
         let api_handle = adapter.spawn_process(api_spec.clone())?;
@@ -354,6 +355,103 @@ fn run_dependency_install(
     })
 }
 
+fn ensure_better_sqlite3_compat_shim(
+    manifest: &AppBoxManifest,
+) -> Result<(), ReactSqliteRuntimeError> {
+    let generated_root = prepare_generated_root(manifest)?;
+    let shim_root = ensure_child(
+        &generated_root,
+        Path::new("react/node_modules/better-sqlite3"),
+    )?;
+    fs::create_dir_all(&shim_root)?;
+    fs::write(
+        shim_root.join("package.json"),
+        r#"{"name":"better-sqlite3","version":"0.0.0-sofvary-shim","main":"index.cjs","types":"index.d.ts","type":"commonjs"}
+"#,
+    )?;
+    fs::write(shim_root.join("index.cjs"), BETTER_SQLITE3_COMPAT_SHIM)?;
+    fs::write(shim_root.join("index.d.ts"), BETTER_SQLITE3_COMPAT_TYPES)?;
+    Ok(())
+}
+
+const BETTER_SQLITE3_COMPAT_SHIM: &str = r#"const { DatabaseSync } = require("node:sqlite");
+
+class SofvaryStatement {
+  constructor(statement) {
+    this.statement = statement;
+  }
+
+  all(...params) {
+    return this.statement.all(...params);
+  }
+
+  get(...params) {
+    return this.statement.get(...params);
+  }
+
+  run(...params) {
+    return this.statement.run(...params);
+  }
+}
+
+class SofvaryBetterSqliteDatabase {
+  constructor(filename) {
+    this.database = new DatabaseSync(filename);
+  }
+
+  exec(sql) {
+    this.database.exec(sql);
+    return this;
+  }
+
+  prepare(sql) {
+    return new SofvaryStatement(this.database.prepare(sql));
+  }
+
+  transaction(callback) {
+    return (...args) => {
+      this.database.exec("BEGIN");
+      try {
+        const result = callback(...args);
+        this.database.exec("COMMIT");
+        return result;
+      } catch (error) {
+        try {
+          this.database.exec("ROLLBACK");
+        } catch (_) {}
+        throw error;
+      }
+    };
+  }
+
+  close() {
+    this.database.close();
+  }
+}
+
+module.exports = SofvaryBetterSqliteDatabase;
+module.exports.default = SofvaryBetterSqliteDatabase;
+"#;
+
+const BETTER_SQLITE3_COMPAT_TYPES: &str = r#"declare class Database {
+  constructor(filename: string);
+  exec(sql: string): this;
+  prepare(sql: string): Database.Statement;
+  transaction<T extends (...args: any[]) => any>(callback: T): T;
+  close(): void;
+}
+
+declare namespace Database {
+  interface Statement {
+    all(...params: unknown[]): any[];
+    get(...params: unknown[]): any;
+    run(...params: unknown[]): { changes: number; lastInsertRowid: number | bigint };
+  }
+}
+
+export = Database;
+"#;
+
 fn enforce_command(
     name: &str,
     spec: &CommandSpec,
@@ -401,10 +499,14 @@ fn command_spec_from_pack(
 }
 
 fn insert_runtime_env(env: &mut HashMap<String, String>, runtime_env: RuntimeEnv) {
+    let is_api_process = runtime_env.sqlite_path.is_some();
     env.insert(
         "SOFVARY_API_PORT".to_string(),
         runtime_env.api_port.to_string(),
     );
+    if is_api_process {
+        env.insert("PORT".to_string(), runtime_env.api_port.to_string());
+    }
     if let Some(sqlite_path) = runtime_env.sqlite_path {
         env.insert(
             "SOFVARY_SQLITE_PATH".to_string(),
@@ -552,8 +654,10 @@ fn ensure_exact_workspace_react_sqlite_files(
     let mut actual = HashSet::new();
     collect_relative_files(&generated_root, &generated_root, &mut actual)?;
 
+    // Dependency install runs inside generated/react; preview retries must ignore those artifacts.
     actual.retain(|path| {
-        (path.starts_with("react/") || path.starts_with("data/")) && path != "data/app.sqlite"
+        (path.starts_with("react/") || path.starts_with("data/"))
+            && !is_react_sqlite_runtime_artifact(path)
     });
 
     if actual != expected {
@@ -563,6 +667,16 @@ fn ensure_exact_workspace_react_sqlite_files(
     }
 
     Ok(())
+}
+
+fn is_react_sqlite_runtime_artifact(path: &str) -> bool {
+    path == "data/app.sqlite"
+        || path == "react/pnpm-lock.yaml"
+        || path == "react/package-lock.json"
+        || path == "react/yarn.lock"
+        || path.starts_with("react/node_modules/")
+        || path.starts_with("react/.vite/")
+        || path.starts_with("react/dist/")
 }
 
 fn collect_relative_files<'a>(
@@ -831,6 +945,7 @@ mod tests {
         );
 
         assert_eq!(env.get("SOFVARY_API_PORT"), Some(&"43123".to_string()));
+        assert_eq!(env.get("PORT"), Some(&"43123".to_string()));
         assert_eq!(
             env.get("SOFVARY_API_TOKEN"),
             Some(&"workspace-token".to_string())
@@ -838,6 +953,22 @@ mod tests {
         assert!(env
             .get("SOFVARY_SQLITE_PATH")
             .is_some_and(|path| path.ends_with("app.sqlite")));
+    }
+
+    #[test]
+    fn runtime_env_omits_standard_port_for_vite_process() {
+        let mut env = HashMap::new();
+        insert_runtime_env(
+            &mut env,
+            RuntimeEnv {
+                api_port: 43123,
+                sqlite_path: None,
+                api_token: Some("workspace-token".to_string()),
+            },
+        );
+
+        assert_eq!(env.get("SOFVARY_API_PORT"), Some(&"43123".to_string()));
+        assert_eq!(env.get("PORT"), None);
     }
 
     #[test]
@@ -866,6 +997,63 @@ mod tests {
 
         ensure_exact_workspace_react_sqlite_files(&manifest, &allowed)
             .expect("runtime sqlite artifact is allowed");
+    }
+
+    #[test]
+    fn exact_workspace_file_set_allows_dependency_install_artifacts() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest = test_manifest(temp.path());
+        write_allowed_files(&manifest);
+        fs::write(
+            manifest.paths.generated.join("react/pnpm-lock.yaml"),
+            "lockfile",
+        )
+        .expect("pnpm lockfile");
+        let node_bin = manifest
+            .paths
+            .generated
+            .join("react/node_modules/.bin/vite");
+        fs::create_dir_all(node_bin.parent().expect("node bin parent")).expect("node bin");
+        fs::write(node_bin, "vite").expect("vite bin");
+        let vite_cache = manifest.paths.generated.join("react/.vite/deps/react.js");
+        fs::create_dir_all(vite_cache.parent().expect("vite cache parent")).expect("vite cache");
+        fs::write(vite_cache, "cache").expect("vite cache file");
+        let allowed = REACT_SQLITE_ALLOWED_FILES
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>();
+
+        ensure_exact_workspace_react_sqlite_files(&manifest, &allowed)
+            .expect("dependency install artifacts are allowed");
+    }
+
+    #[test]
+    fn better_sqlite3_compat_shim_is_written_as_runtime_artifact() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest = test_manifest(temp.path());
+
+        ensure_better_sqlite3_compat_shim(&manifest).expect("shim");
+
+        let shim_root = manifest
+            .paths
+            .generated
+            .join("react/node_modules/better-sqlite3");
+        let package_json = fs::read_to_string(shim_root.join("package.json")).expect("package");
+        let index = fs::read_to_string(shim_root.join("index.cjs")).expect("index");
+        let types = fs::read_to_string(shim_root.join("index.d.ts")).expect("types");
+        assert!(package_json.contains("0.0.0-sofvary-shim"));
+        assert!(package_json.contains("index.d.ts"));
+        assert!(index.contains("node:sqlite"));
+        assert!(index.contains("lastInsertRowid") || index.contains("statement.run"));
+        assert!(types.contains("declare class Database"));
+
+        let allowed = REACT_SQLITE_ALLOWED_FILES
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>();
+        write_allowed_files(&manifest);
+        ensure_exact_workspace_react_sqlite_files(&manifest, &allowed)
+            .expect("better-sqlite3 shim remains a runtime artifact");
     }
 
     #[test]

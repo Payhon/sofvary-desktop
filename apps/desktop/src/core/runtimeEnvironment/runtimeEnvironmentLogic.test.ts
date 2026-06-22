@@ -99,7 +99,8 @@ test("runtime requirement check blocks node-backed runtimes until node and pnpm 
   assert.equal(runtimeRequiresNodeToolchain("ai-agent-app"), true);
   assert.equal(runtimeRequiresNodeToolchain("static-html"), false);
   assert.equal(runtimeRequiresNodeToolchain("canvas2d"), false);
-  assert.match(issue?.message ?? "", /requires the Node\.js Toolchain/);
+  assert.match(issue?.message ?? "", /requires the Sofvary-managed Node\.js Toolchain/);
+  assert.match(issue?.message ?? "", /before previewing/);
   assert.match(issue?.message ?? "", /Node\.js/);
   assert.match(issue?.message ?? "", /pnpm/);
 });
@@ -128,6 +129,35 @@ test("runtime requirement check passes installed node toolchain", () => {
   };
 
   assert.equal(getRuntimeEnvironmentRequirementIssue("react-vite", [installed]), null);
+});
+
+test("runtime requirement check rejects external PATH tools for managed runtimes", () => {
+  const installed: RuntimeEnvironmentStatus = {
+    ...baseStatus,
+    installState: "installed",
+    source: "external-path",
+    node: {
+      name: "node",
+      ok: true,
+      version: "v24.16.0",
+      executable: "node",
+      source: "external-path",
+      detail: "Detected",
+    },
+    pnpm: {
+      name: "pnpm",
+      ok: true,
+      version: "10.12.3",
+      executable: "pnpm",
+      source: "external-path",
+      detail: "Detected",
+    },
+  };
+
+  const issue = getRuntimeEnvironmentRequirementIssue("react-sqlite", [installed]);
+
+  assert.match(issue?.message ?? "", /managed Node\.js sidecars/);
+  assert.match(issue?.message ?? "", /external PATH tools are not enough/);
 });
 
 test("active install blocks install and activation actions", () => {

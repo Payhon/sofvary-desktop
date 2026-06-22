@@ -1,6 +1,7 @@
 use crate::core::acp_client::{run_acp_agent, AcpRunRequest};
 use crate::core::agent_cli_bridge::{run_cli_agent, CliRunRequest};
 use crate::core::agent_config::{AgentConfig, AgentProvider, AgentTransportKind};
+use crate::core::gateway_uni_event::GatewayUniEventEmitter;
 use crate::core::harness_engine::PromptEnvelope;
 use crate::core::pi_agent::{run_pi_agent, PiRunRequest};
 use crate::core::policy_engine::PolicyEngine;
@@ -458,6 +459,7 @@ pub struct ConfiguredAgentAdapter {
     approvals: PolicyApprovalSet,
     timeout_ms: u64,
     event_sink: Option<AgentEventSink>,
+    gateway_event_emitter: Option<GatewayUniEventEmitter>,
 }
 
 impl ConfiguredAgentAdapter {
@@ -472,11 +474,17 @@ impl ConfiguredAgentAdapter {
             manifest,
             approvals,
             event_sink: None,
+            gateway_event_emitter: None,
         }
     }
 
     pub fn with_event_sink(mut self, event_sink: AgentEventSink) -> Self {
         self.event_sink = Some(event_sink);
+        self
+    }
+
+    pub fn with_gateway_event_emitter(mut self, emitter: GatewayUniEventEmitter) -> Self {
+        self.gateway_event_emitter = Some(emitter);
         self
     }
 
@@ -498,6 +506,7 @@ impl ConfiguredAgentAdapter {
             diagnostics: context.diagnostics(),
             timeout_ms: self.timeout_ms,
             event_sink: self.event_sink.clone(),
+            gateway_events: self.gateway_event_emitter.clone(),
         })?;
 
         Ok(AgentAdapterOutput {
@@ -537,6 +546,7 @@ impl ConfiguredAgentAdapter {
             diagnostics: context.diagnostics(),
             timeout_ms: self.timeout_ms,
             event_sink: self.event_sink.clone(),
+            gateway_events: self.gateway_event_emitter.clone(),
         })?;
 
         Ok(AgentAdapterOutput {
@@ -564,6 +574,7 @@ impl ConfiguredAgentAdapter {
             thread_id: &self.manifest.app_id,
             timeout_ms: self.timeout_ms,
             event_sink: self.event_sink.clone(),
+            gateway_events: self.gateway_event_emitter.clone(),
         })?;
 
         Ok(AgentAdapterOutput {

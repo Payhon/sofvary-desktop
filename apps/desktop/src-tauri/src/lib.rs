@@ -46,6 +46,9 @@ use crate::core::file_processor_runtime::{
     record_selected_files as record_file_processor_selected_files_log,
     FileProcessorDryRunOperation, FileProcessorSelectedFileMetadata,
 };
+use crate::core::gateway_uni_event::{
+    gateway_uni_event_summary, GatewayUniEvent, GatewayUniEventSink, GatewayUniEventType,
+};
 use crate::core::llm_provider_config::{
     fresh_llm_test_record, LlmProviderConfig, LlmProviderConfigError, LlmProviderConfigState,
     LlmProviderConfigStore, LlmProviderKind, LlmProviderTestRecord, UpsertLlmProviderPayload,
@@ -77,7 +80,9 @@ use crate::core::runtime_environment::{
     RuntimeEnvironmentCatalogItem, RuntimeEnvironmentKind, RuntimeEnvironmentStatus,
     SetActiveRuntimeEnvironmentPayload, StartRuntimeEnvironmentInstallPayload,
 };
-use crate::core::runtime_manager::{RuntimeManager, RuntimeManagerError, RuntimePreview};
+use crate::core::runtime_manager::{
+    runtime_preview_issue_from_diagnostic, RuntimeManager, RuntimeManagerError, RuntimePreview,
+};
 use crate::core::runtime_selector::{
     manual_runtime_selection, select_runtime_for_intent, RuntimeIntentSelection,
 };
@@ -143,6 +148,21 @@ struct PreviewWorkspacePayload {
     mode: Option<RuntimeMode>,
     #[serde(default)]
     policy_approvals: PolicyApprovalSet,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RetryBuildThreadPreviewPayload {
+    thread_id: String,
+    #[serde(default)]
+    policy_approvals: PolicyApprovalSet,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RetryBuildThreadPreviewResult {
+    thread: BuildThreadSummary,
+    preview: RuntimePreview,
 }
 
 #[derive(Debug, Deserialize)]
@@ -481,7 +501,6 @@ fn start_build_thread(
     let runtime_selection =
         runtime_selection_for_payload(&payload.requirement, payload.runtime_kind);
     let runtime_kind = runtime_selection.runtime_kind;
-    ensure_runtime_environment_for_runtime(runtime_kind)?;
     let thread = state
         .build_thread_store
         .create(CreateBuildThreadRequest {
@@ -585,7 +604,6 @@ fn continue_build_thread(
         .get_workspace(continuation_app_id.clone())
         .map_err(|error| error.to_string())?;
     let runtime_kind = detail.summary.runtime_kind;
-    ensure_runtime_environment_for_runtime(runtime_kind)?;
     let agent_config = state
         .agent_store
         .resolve_agent(Some(&detail.summary.agent_id))
@@ -775,6 +793,17 @@ fn run_build_thread_task(
             append_live_agent_event(&app, &build_thread_store, &thread_id, event);
         })
     };
+    let gateway_event_sink: GatewayUniEventSink = {
+        let app = app.clone();
+        let build_thread_store = build_thread_store;
+        let thread_id = thread_id.clone();
+        Arc::new(move |event| {
+            if build_thread_is_canceled(&build_thread_store, &thread_id) {
+                return;
+            }
+            append_gateway_uni_event(&app, &build_thread_store, &thread_id, event);
+        })
+    };
 
     let build_result = match run_context {
         BuildThreadRunContext::NewApp => runtime_manager
@@ -786,6 +815,8 @@ fn run_build_thread_task(
                 &policy_approvals,
                 &agent_config,
                 Some(agent_event_sink),
+                Some(thread_id.clone()),
+                Some(gateway_event_sink),
             ),
         BuildThreadRunContext::ExistingApp { app_id } => runtime_manager
             .continue_existing_app_with_agent_policy_and_events(
@@ -797,6 +828,8 @@ fn run_build_thread_task(
                 &policy_approvals,
                 &agent_config,
                 Some(agent_event_sink),
+                Some(thread_id.clone()),
+                Some(gateway_event_sink),
             ),
     };
 
@@ -814,6 +847,7 @@ fn run_build_thread_task(
                     workspace_id: Some(Some(preview.app_id.clone())),
                     app_id: Some(Some(preview.app_id.clone())),
                     preview: Some(Some(preview.clone())),
+                    preview_issue: Some(None),
                     error: Some(None),
                 },
             );
@@ -825,6 +859,9 @@ fn run_build_thread_task(
         Err(error) => {
             if build_thread_is_canceled(&build_thread_store, &thread_id) {
                 emit_build_thread_canceled_state(&app);
+                return;
+            }
+            if mark_build_thread_preview_blocked(&app, &build_thread_store, &thread_id, &error) {
                 return;
             }
             let (message, metadata) = build_thread_failure_summary(&error);
@@ -871,6 +908,7 @@ fn build_thread_failure_summary(error: &RuntimeManagerError) -> (String, serde_j
             summary,
             diagnostic,
             source_detail,
+            assets: _,
         } => (
             format!("Sofvary 已完成运行诊断：{summary}"),
             serde_json::json!({
@@ -882,6 +920,68 @@ fn build_thread_failure_summary(error: &RuntimeManagerError) -> (String, serde_j
         ),
         _ => (error.to_string(), serde_json::json!({})),
     }
+}
+
+fn mark_build_thread_preview_blocked(
+    app: &tauri::AppHandle,
+    build_thread_store: &BuildThreadStore,
+    thread_id: &str,
+    error: &RuntimeManagerError,
+) -> bool {
+    let RuntimeManagerError::RuntimeDiagnosticBlocked {
+        summary,
+        diagnostic,
+        source_detail,
+        assets: Some(assets),
+    } = error
+    else {
+        return false;
+    };
+
+    let issue = runtime_preview_issue_from_diagnostic(
+        assets.runtime_kind,
+        summary.clone(),
+        diagnostic.clone(),
+        source_detail.clone(),
+    );
+    let message = format!("Sofvary 已生成软件资产，但预览环境未就绪：{summary}");
+    if let Ok(entry) = build_thread_store.append_entry(
+        thread_id,
+        BuildThreadEntryKind::System,
+        message,
+        serde_json::json!({
+            "kind": "runtime-preview-blocked",
+            "summary": summary,
+            "diagnostic": diagnostic,
+            "source": source_detail,
+            "previewIssue": issue.clone(),
+            "assets": {
+                "appId": assets.app_id.clone(),
+                "runtimeKind": assets.runtime_kind,
+                "runtimeMode": assets.runtime_mode,
+                "manifest": assets.manifest.clone(),
+                "promptEnvelopeSummary": assets.prompt_envelope_summary.clone()
+            }
+        }),
+    ) {
+        emit_build_thread_entry(app, &entry);
+    }
+
+    let summary = build_thread_store.update(
+        thread_id,
+        BuildThreadUpdate {
+            status: Some(BuildThreadStatus::PreviewBlocked),
+            workspace_id: Some(Some(assets.app_id.clone())),
+            app_id: Some(Some(assets.app_id.clone())),
+            preview: Some(None),
+            preview_issue: Some(Some(issue)),
+            error: Some(None),
+        },
+    );
+    if let Ok(summary) = summary {
+        emit_build_thread_updated(app, &summary);
+    }
+    true
 }
 
 fn update_build_thread_unless_canceled(
@@ -995,6 +1095,44 @@ fn append_live_agent_event(
         kind,
         content,
         serde_json::json!({ "source": "agent-live-stream", "event": metadata_event }),
+    ) {
+        emit_build_thread_entry(app, &entry);
+    }
+}
+
+fn append_gateway_uni_event(
+    app: &tauri::AppHandle,
+    build_thread_store: &BuildThreadStore,
+    thread_id: &str,
+    event: GatewayUniEvent,
+) {
+    let kind = match event.event_type {
+        GatewayUniEventType::MessageDelta => BuildThreadEntryKind::Assistant,
+        GatewayUniEventType::ToolStarted
+        | GatewayUniEventType::ToolDelta
+        | GatewayUniEventType::ToolCompleted
+        | GatewayUniEventType::TerminalOutput
+        | GatewayUniEventType::ApprovalRequested
+        | GatewayUniEventType::ApprovalResolved => BuildThreadEntryKind::Tool,
+        GatewayUniEventType::FileWriteRequested | GatewayUniEventType::FileWritten => {
+            BuildThreadEntryKind::File
+        }
+        GatewayUniEventType::Error => BuildThreadEntryKind::Error,
+        GatewayUniEventType::SessionStarted
+        | GatewayUniEventType::TurnStarted
+        | GatewayUniEventType::ReasoningDelta
+        | GatewayUniEventType::StatusChanged
+        | GatewayUniEventType::TurnCompleted => BuildThreadEntryKind::AgentEvent,
+    };
+    let content = gateway_uni_event_summary(&event);
+    if content.trim().is_empty() {
+        return;
+    }
+    if let Ok(entry) = build_thread_store.append_entry(
+        thread_id,
+        kind,
+        content,
+        serde_json::json!({ "source": "gateway-uni-event", "gatewayUniEvent": event }),
     ) {
         emit_build_thread_entry(app, &entry);
     }
@@ -1530,6 +1668,86 @@ fn preview_workspace(
             &payload.policy_approvals,
         )
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn retry_build_thread_preview(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    payload: RetryBuildThreadPreviewPayload,
+) -> Result<RetryBuildThreadPreviewResult, String> {
+    let detail = state
+        .build_thread_store
+        .get(&payload.thread_id)
+        .map_err(|error| error.to_string())?;
+    if detail.summary.status != BuildThreadStatus::PreviewBlocked {
+        return Err("build thread is not blocked by preview environment".to_string());
+    }
+    let app_id = detail
+        .summary
+        .app_id
+        .clone()
+        .or_else(|| detail.summary.workspace_id.clone())
+        .ok_or_else(|| "preview-blocked build thread has no workspace id".to_string())?;
+
+    match state
+        .runtime_manager
+        .preview_existing_workspace_with_policy(
+            app_id,
+            detail.summary.runtime_mode,
+            &state.workspace_manager,
+            &payload.policy_approvals,
+        ) {
+        Ok(preview) => {
+            append_preview_logs(
+                &app,
+                &state.build_thread_store,
+                &payload.thread_id,
+                &preview,
+            );
+            let thread = state
+                .build_thread_store
+                .update(
+                    &payload.thread_id,
+                    BuildThreadUpdate {
+                        status: Some(BuildThreadStatus::Completed),
+                        workspace_id: Some(Some(preview.app_id.clone())),
+                        app_id: Some(Some(preview.app_id.clone())),
+                        preview: Some(Some(preview.clone())),
+                        preview_issue: Some(None),
+                        error: Some(None),
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+            emit_build_thread_updated(&app, &thread);
+            let _ = app.emit("sofvary-runtime-preview", preview.clone());
+            Ok(RetryBuildThreadPreviewResult { thread, preview })
+        }
+        Err(error) => {
+            let message = format!("预览环境修复后重试失败：{error}");
+            if let Ok(entry) = state.build_thread_store.append_entry(
+                &payload.thread_id,
+                BuildThreadEntryKind::Error,
+                message.clone(),
+                serde_json::json!({
+                    "kind": "runtime-preview-retry-failed"
+                }),
+            ) {
+                emit_build_thread_entry(&app, &entry);
+            }
+            if let Ok(thread) = state.build_thread_store.update(
+                &payload.thread_id,
+                BuildThreadUpdate {
+                    status: Some(BuildThreadStatus::PreviewBlocked),
+                    error: Some(Some(message.clone())),
+                    ..BuildThreadUpdate::default()
+                },
+            ) {
+                emit_build_thread_updated(&app, &thread);
+            }
+            Err(message)
+        }
+    }
 }
 
 #[tauri::command]
@@ -2130,6 +2348,7 @@ pub fn run() {
             set_default_llm_provider,
             test_llm_provider_config,
             preview_workspace,
+            retry_build_thread_preview,
             record_file_processor_selected_files,
             confirm_file_processor_dry_run_plan,
             preview_policy,

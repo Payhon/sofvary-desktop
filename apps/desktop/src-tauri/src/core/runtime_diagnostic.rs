@@ -81,17 +81,34 @@ impl RuntimeDiagnostic {
             RuntimeDiagnosticRepairTarget::User => "user confirmation is required",
             RuntimeDiagnosticRepairTarget::None => "automatic repair is not available",
         };
+        let detail = self.summary_detail();
         match (&self.command_name, self.status_code) {
             (Some(command), Some(status)) => {
-                format!("{stage} command '{command}' failed with status {status}; {actor}")
+                format!("{stage} command '{command}' failed with status {status}; {actor}{detail}")
             }
-            (Some(command), None) => format!("{stage} command '{command}' failed; {actor}"),
-            (None, _) => format!("{stage} failed; {actor}"),
+            (Some(command), None) => format!("{stage} command '{command}' failed; {actor}{detail}"),
+            (None, _) => format!("{stage} failed; {actor}{detail}"),
         }
     }
 
     pub fn is_agent_repairable(&self) -> bool {
         self.repairable_by == RuntimeDiagnosticRepairTarget::Agent
+    }
+
+    fn summary_detail(&self) -> String {
+        let combined = [self.stdout_tail.as_deref(), self.stderr_tail.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lower = combined.to_lowercase();
+        if lower.contains("sidecar executable") && lower.contains("not found") {
+            return ": managed runtime sidecar is missing. Install or activate the Node.js Toolchain from Settings > Runtime Environment.".to_string();
+        }
+        if lower.contains("sidecar executable") && lower.contains("not executable") {
+            return ": managed runtime sidecar is not executable. Reinstall or reactivate the Node.js Toolchain from Settings > Runtime Environment.".to_string();
+        }
+        String::new()
     }
 }
 
@@ -574,6 +591,29 @@ mod tests {
             RuntimeDiagnosticRepairTarget::Sofvary
         );
         assert!(!diagnostic.is_agent_repairable());
+    }
+
+    #[test]
+    fn runtime_start_sidecar_failure_summary_names_managed_toolchain() {
+        let diagnostic = RuntimeDiagnostic {
+            runtime_kind: RuntimeKind::ReactSqlite,
+            stage: RuntimeDiagnosticStage::RuntimeStart,
+            command_name: None,
+            status_code: None,
+            stdout_tail: None,
+            stderr_tail: Some(
+                "sidecar executable 'pnpm' was not found in controlled Sofvary sidecar dirs"
+                    .to_string(),
+            ),
+            log_path: None,
+            category: RuntimeDiagnosticCategory::Environment,
+            repairable_by: RuntimeDiagnosticRepairTarget::Sofvary,
+        };
+
+        assert_eq!(
+            diagnostic.summary(),
+            "runtime start failed; Sofvary environment setup is required: managed runtime sidecar is missing. Install or activate the Node.js Toolchain from Settings > Runtime Environment."
+        );
     }
 
     #[test]

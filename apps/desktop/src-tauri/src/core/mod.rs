@@ -18,6 +18,7 @@ pub mod data_table_runtime;
 pub mod deep_link_install;
 pub mod desktop_widget_runtime;
 pub mod file_processor_runtime;
+pub mod gateway_uni_event;
 pub mod harness_engine;
 pub mod llm_provider_config;
 pub mod markdown_knowledge_runtime;

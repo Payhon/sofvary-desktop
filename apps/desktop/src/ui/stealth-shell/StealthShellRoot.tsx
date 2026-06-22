@@ -55,6 +55,9 @@ export function StealthShellRoot() {
       if (isLiveBuildThread(summary)) {
         activeBuildThreadIdRef.current = summary.id;
         setActiveBuildThread(summary);
+        if (summary.status === "preview-blocked") {
+          refreshWorkspaces();
+        }
         continue;
       }
 
@@ -84,7 +87,7 @@ export function StealthShellRoot() {
       latestBuildEntryIdRef.current = entry.id;
       setLatestBuildEntry(entry);
     }
-  }, [clearBuildOverlayActivity]);
+  }, [clearBuildOverlayActivity, refreshWorkspaces]);
 
   useEffect(() => {
     const batcher = new BuildThreadEventBatcher(applyBuildThreadBatch);
@@ -187,6 +190,7 @@ function isLiveBuildThread(thread: BuildThreadSummary): boolean {
     thread.status === "queued" ||
     thread.status === "planning" ||
     thread.status === "building" ||
-    thread.status === "previewing"
+    thread.status === "previewing" ||
+    thread.status === "preview-blocked"
   );
 }

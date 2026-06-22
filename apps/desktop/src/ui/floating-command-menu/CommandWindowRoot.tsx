@@ -52,6 +52,7 @@ import {
   deleteBuildThread,
   getBuildThread,
   listBuildThreads,
+  retryBuildThreadPreview,
   startBuildThread,
 } from "../../core/buildThreads/buildThreadClient";
 import {
@@ -63,6 +64,7 @@ import {
   canContinueBuildThread,
   formatBuildThreadStatus,
   getWorkspaceBuildThread,
+  mergeBuildThreadEntries,
   sortBuildThreads,
   summarizeBuildThreadError,
   upsertBuildThreadSummary,
@@ -474,7 +476,9 @@ export function CommandWindowRoot() {
       return;
     }
     getBuildThread(threadId)
-      .then(setActiveThreadDetail)
+      .then((detail) => {
+        setActiveThreadDetail((current) => mergeFetchedThreadDetail(current, detail));
+      })
       .catch(() => setActiveThreadDetail(null));
   }, []);
 
@@ -551,6 +555,9 @@ export function CommandWindowRoot() {
     const unlisteners = [
       listenShellEvent<BuildThreadSummary>("sofvary-build-thread-updated", (thread) => {
         batcher.pushSummary(thread);
+        if (thread.status === "preview-blocked") {
+          refreshWorkspaces();
+        }
       }),
       listenShellEvent<BuildThreadEntry>("sofvary-build-thread-entry", (entry) => {
         batcher.pushEntry(entry);
@@ -861,6 +868,82 @@ export function CommandWindowRoot() {
     }
   };
 
+  const repairPreviewBlockedThread = async (
+    thread: BuildThreadSummary,
+    workspaceName?: string,
+  ) => {
+    const appId = thread.appId ?? thread.workspaceId;
+    setActivePreviewAppId(appId ?? null);
+    setActiveThreadId(thread.id);
+    setCapsuleStatus({
+      kind: "previewing",
+      targetName: workspaceName ?? thread.title,
+      detail: t("workspace.repairingPreview"),
+    });
+
+    try {
+      setRuntimePreflightMessage(t("workspace.repairingPreview"));
+      const runtimeEnvironment = await ensureRuntimeEnvironmentReady(thread.runtimeKind);
+      if (!runtimeEnvironment.ready) {
+        setCapsuleStatus({
+          kind: "error",
+          detail: runtimeEnvironment.message ?? t("workspace.previewRepairPending"),
+        });
+        await getBuildThread(thread.id)
+          .then(setActiveThreadDetail)
+          .catch(() => undefined);
+        return;
+      }
+
+      const policyApprovals = await requestPolicyApprovals(
+        {
+          scope: "runtime-build",
+          runtimeKind: thread.runtimeKind,
+          mode: thread.runtimeMode,
+          agentId: thread.agentId,
+        },
+        t("policy.dialog.runRuntime", { runtimeKind: thread.runtimeKind }),
+      );
+      const result = await retryBuildThreadPreview(thread.id, policyApprovals);
+      setPromptEnvelopeSummary(result.preview.promptEnvelopeSummary);
+      setBuildThreads((current) => upsertBuildThreadSummary(current, result.thread));
+      setActiveThreadDetail((current) =>
+        current?.summary.id === result.thread.id
+          ? { ...current, summary: result.thread }
+          : current,
+      );
+      setCapsuleStatus({
+        kind: "success",
+        detail: `${workspaceName ?? thread.title} 已打开预览。`,
+      });
+      await showMainWindow().catch(() => {
+        // Browser-only Vite sessions cannot open native Tauri windows.
+      });
+      refreshWorkspaces();
+      if (!isPinned) {
+        await hideCommandWindow().catch(() => {});
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message === POLICY_APPROVAL_CANCELED) {
+        setCapsuleStatus({ kind: "canceled", detail: "Preview retry canceled." });
+        return;
+      }
+      setCapsuleStatus({ kind: "error", detail: message });
+    } finally {
+      setActivePreviewAppId((current) => (current === appId ? null : current));
+    }
+  };
+
+  const repairPreviewBlockedWorkspace = async (workspace: WorkspaceSummary) => {
+    const thread = getWorkspaceBuildThread(workspace, buildThreadsRef.current);
+    if (!thread || thread.status !== "preview-blocked") {
+      await previewExistingWorkspace(workspace);
+      return;
+    }
+    await repairPreviewBlockedThread(thread, workspace.name);
+  };
+
   const modifyExistingWorkspace = async (workspace: WorkspaceSummary) => {
     const thread = getWorkspaceBuildThread(workspace, buildThreadsRef.current);
     if (!thread || !canContinueBuildThread(thread)) {
@@ -1128,7 +1211,7 @@ export function CommandWindowRoot() {
   const installRuntimeEnvironment = async (
     status: RuntimeEnvironmentStatus,
     version: RuntimeEnvironmentVersionOption,
-  ) => {
+  ): Promise<{ installed: boolean; message?: string }> => {
     const installKey = runtimeEnvironmentInstallKey(status, version);
     setActiveRuntimeEnvironmentInstallKey(installKey);
     setRuntimeEnvironmentStatusOverride(`Preparing ${status.catalog.label} ${version.version}`);
@@ -1159,12 +1242,16 @@ export function CommandWindowRoot() {
       refreshAgents();
       refreshAgentInstalls();
       setRuntimeEnvironmentStatusOverride(updated.detail);
+      return { installed: true, message: updated.detail };
     } catch (error) {
+      let message: string;
       if (error instanceof Error && error.message === POLICY_APPROVAL_CANCELED) {
-        setRuntimeEnvironmentStatusOverride("Runtime environment install canceled.");
+        message = "Runtime environment install canceled.";
       } else {
-        setRuntimeEnvironmentStatusOverride(error instanceof Error ? error.message : String(error));
+        message = error instanceof Error ? error.message : String(error);
       }
+      setRuntimeEnvironmentStatusOverride(message);
+      return { installed: false, message };
     } finally {
       setActiveRuntimeEnvironmentInstallKey((current) =>
         current === installKey ? null : current,
@@ -1271,34 +1358,51 @@ export function CommandWindowRoot() {
     }
   };
 
-  const ensureRuntimeEnvironmentReady = async (runtimeKind: RuntimeKind): Promise<boolean> => {
+  const ensureRuntimeEnvironmentReady = async (
+    runtimeKind: RuntimeKind,
+  ): Promise<{ ready: boolean; message?: string }> => {
     try {
       const statuses = sortRuntimeEnvironmentStatuses(await getRuntimeEnvironmentStatuses());
       setRuntimeEnvironmentStatuses(statuses);
       const issue = getRuntimeEnvironmentRequirementIssue(runtimeKind, statuses);
       if (!issue) {
         setRuntimePreflightMessage(null);
-        return true;
+        return { ready: true };
       }
 
       setRuntimePreflightMessage(issue.message);
       setRuntimeEnvironmentStatusOverride(issue.message);
-      setShellState("CommandMenuVisible");
-      await showMainWindow().catch(() => {
-        // Browser-only Vite sessions cannot open native Tauri windows.
-      });
-      return false;
+      const nodeStatus = statuses.find((status) => status.catalog.kind === issue.runtimeEnvironmentKind);
+      const version = nodeStatus ? getDefaultRuntimeEnvironmentVersion(nodeStatus) : null;
+      if (!nodeStatus || !version || !version.supported) {
+        const message = "Sofvary-managed Node.js Toolchain is not available for this platform yet.";
+        setRuntimePreflightMessage(message);
+        setRuntimeEnvironmentStatusOverride(message);
+        return { ready: false, message };
+      }
+      const installResult = await installRuntimeEnvironment(nodeStatus, version);
+      if (!installResult.installed) {
+        const message = installResult.message ?? issue.message;
+        setRuntimePreflightMessage(message);
+        return { ready: false, message };
+      }
+      const refreshed = sortRuntimeEnvironmentStatuses(await getRuntimeEnvironmentStatuses());
+      setRuntimeEnvironmentStatuses(refreshed);
+      const remainingIssue = getRuntimeEnvironmentRequirementIssue(runtimeKind, refreshed);
+      if (remainingIssue) {
+        setRuntimePreflightMessage(remainingIssue.message);
+        setRuntimeEnvironmentStatusOverride(remainingIssue.message);
+        return { ready: false, message: remainingIssue.message };
+      }
+      setRuntimePreflightMessage(null);
+      return { ready: true };
     } catch (error) {
       const message = `Runtime environment check failed: ${
         error instanceof Error ? error.message : String(error)
       }`;
       setRuntimePreflightMessage(message);
       setRuntimeEnvironmentStatusOverride(message);
-      setShellState("CommandMenuVisible");
-      await showMainWindow().catch(() => {
-        // Browser-only Vite sessions cannot open native Tauri windows.
-      });
-      return false;
+      return { ready: false, message };
     }
   };
 
@@ -1320,8 +1424,6 @@ export function CommandWindowRoot() {
       if (runtimeKind === "auto") {
         throw new Error("Sofvary could not resolve a runtime for this request.");
       }
-      const runtimeEnvironmentReady = await ensureRuntimeEnvironmentReady(runtimeKind);
-      if (!runtimeEnvironmentReady) return;
 
       const policyApprovals = await requestPolicyApprovals(
         { scope: "runtime-build", runtimeKind, mode: "dev", agentId },
@@ -1385,9 +1487,6 @@ export function CommandWindowRoot() {
     if (!activeThread || !continuePrompt.trim()) return;
     setRuntimePreflightMessage(null);
     try {
-      const runtimeEnvironmentReady = await ensureRuntimeEnvironmentReady(activeThread.runtimeKind);
-      if (!runtimeEnvironmentReady) return;
-
       const policyApprovals = await requestPolicyApprovals(
         { scope: "runtime-build", runtimeKind: activeThread.runtimeKind, mode: activeThread.runtimeMode, agentId: activeThread.agentId },
         t("policy.dialog.continueRuntime", { runtimeKind: activeThread.runtimeKind }),
@@ -1673,6 +1772,7 @@ export function CommandWindowRoot() {
           onContinueBuildThread={() => void continueActiveThread()}
           onCancelBuildThread={() => void cancelActiveThread()}
           onDeleteBuildThread={(threadId) => void deleteThread(threadId)}
+          onRepairPreviewBlockedThread={(thread) => void repairPreviewBlockedThread(thread)}
           onAddDiscoveredAgent={addDiscoveredAgent}
           onToggleAgentEnabled={toggleAgentEnabled}
           onSetDefaultAgent={makeDefaultAgent}
@@ -1703,6 +1803,7 @@ export function CommandWindowRoot() {
           onInstallDeepLink={installDeepLink}
           onClearDeepLink={clearDeepLink}
           onPreviewWorkspace={previewExistingWorkspace}
+          onRepairWorkspacePreview={(workspace) => void repairPreviewBlockedWorkspace(workspace)}
           onModifyWorkspace={(workspace) => void modifyExistingWorkspace(workspace)}
           onExportWorkspace={exportWorkspace}
           onReleaseWorkspace={openReleaseWizard}
@@ -1743,6 +1844,19 @@ function emitShellEventSafely<T>(eventName: ShellEventName, payload: T) {
   void emitShellEvent(eventName, payload).catch(() => {
     // Cross-window shell events are best-effort; local command state must keep moving.
   });
+}
+
+function mergeFetchedThreadDetail(
+  current: BuildThreadDetail | null,
+  fetched: BuildThreadDetail,
+): BuildThreadDetail {
+  if (!current || current.summary.id !== fetched.summary.id) {
+    return fetched;
+  }
+  return {
+    summary: fetched.summary,
+    entries: mergeBuildThreadEntries([...fetched.entries, ...current.entries]),
+  };
 }
 
 function navigationTitle(

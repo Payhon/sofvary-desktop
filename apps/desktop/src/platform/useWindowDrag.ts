@@ -36,7 +36,7 @@ const dragHandleSelector = [
   ".feature-heading",
   ".preview-titlebar",
   ".build-overlay",
-  ".build-overlay__panel",
+  ".build-wait-dialog",
   ".empty-preview",
   ".empty-preview__canvas",
   ".empty-preview__bar",

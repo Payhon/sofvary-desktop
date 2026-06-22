@@ -1,20 +1,29 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, RefObject } from "react";
 import type { Locale } from "@sofvary/i18n";
 import {
+  AlertTriangle,
+  Bot,
   Boxes,
   Download,
   Eye,
+  FileText,
   FileStack,
   ListTodo,
+  LoaderCircle,
+  MessageSquare,
   PencilLine,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
   PackageCheck,
   Settings,
+  ShieldCheck,
   Store,
+  Terminal,
   Trash2,
   Upload,
+  Wrench,
 } from "lucide-react";
 import type {
   AgentConfig,
@@ -114,7 +123,6 @@ import { formatPackLabel } from "../../core/packs/packLogic";
 import { useDesktopLocale } from "../i18n/DesktopLocaleProvider";
 import { DeepLinkInstallPanel } from "./DeepLinkInstallPanel";
 import { PromptInput } from "./PromptInput";
-import { QuickPromptExamples } from "./QuickPromptExamples";
 import { SettingsSurface } from "./SettingsSurface";
 import { defaultSettingsSection, type SettingsSectionKey } from "./settingsSectionLogic";
 
@@ -248,8 +256,15 @@ function fallbackDesktopT(
     "runtime.option.dataTable": "Data table",
     "runtime.option.fileProcessor": "File processor",
     "runtime.option.desktopWidget": "Desktop widget",
+    "workspace.previewBlocked": "Preview environment pending repair",
+    "workspace.fixPreview": "Repair preview environment",
+    "workspace.repairingPreview": "Repairing preview environment and retrying preview.",
+    "workspace.previewRepairPending": "Preview environment repair is still pending.",
     "workspace.updatedUnknown": "Updated time unknown",
     "workspace.updated": "Updated {value}",
+    "task.previewBlockedTitle": "Preview environment not ready",
+    "task.previewBlockedCopy": "The software assets are ready, but the managed runtime environment must be repaired before preview.",
+    "task.previewBlockedAction": "Install environment and preview",
   };
   return (messages[key] ?? fallback ?? key).replace(/\{([a-zA-Z0-9_.-]+)\}/g, (match, name) =>
     params[name] === undefined || params[name] === null ? match : String(params[name]),
@@ -314,6 +329,7 @@ interface FloatingCommandMenuProps {
   onContinueBuildThread: () => void;
   onCancelBuildThread: () => void;
   onDeleteBuildThread: (threadId: string) => void;
+  onRepairPreviewBlockedThread: (thread: BuildThreadSummary) => void;
   onAddDiscoveredAgent: (agent: DiscoveredAgent) => void;
   onToggleAgentEnabled: (agent: AgentConfig) => void;
   onSetDefaultAgent: (agentId: string) => void;
@@ -346,6 +362,7 @@ interface FloatingCommandMenuProps {
   onInstallDeepLink: () => void;
   onClearDeepLink: () => void;
   onPreviewWorkspace: (workspace: WorkspaceSummary) => void;
+  onRepairWorkspacePreview: (workspace: WorkspaceSummary) => void;
   onModifyWorkspace: (workspace: WorkspaceSummary) => void;
   onExportWorkspace: (workspace: WorkspaceSummary) => void;
   onReleaseWorkspace: (workspace: WorkspaceSummary) => void;
@@ -409,6 +426,7 @@ export function FloatingCommandMenu({
   onContinueBuildThread,
   onCancelBuildThread,
   onDeleteBuildThread,
+  onRepairPreviewBlockedThread,
   onAddDiscoveredAgent,
   onToggleAgentEnabled,
   onSetDefaultAgent,
@@ -435,6 +453,7 @@ export function FloatingCommandMenu({
   onInstallDeepLink,
   onClearDeepLink,
   onPreviewWorkspace,
+  onRepairWorkspacePreview,
   onModifyWorkspace,
   onExportWorkspace,
   onReleaseWorkspace,
@@ -511,9 +530,9 @@ export function FloatingCommandMenu({
             workspaceCount={workspaces.length}
             onCreatePromptChange={onCreatePromptChange}
             onContinuePromptChange={onContinuePromptChange}
-            onPickPrompt={onCreatePromptChange}
             onStart={onStart}
             onToggleTaskRail={() => setTaskRailOpen((current) => !current)}
+            onOpenTaskRail={() => setTaskRailOpen(true)}
             onCloseTaskRail={() => setTaskRailOpen(false)}
             onRuntimeChoiceChange={onRuntimeChoiceChange}
             onAgentChange={onAgentChange}
@@ -522,6 +541,7 @@ export function FloatingCommandMenu({
             onContinue={onContinueBuildThread}
             onCancel={onCancelBuildThread}
             onDelete={onDeleteBuildThread}
+            onRepairPreviewBlockedThread={onRepairPreviewBlockedThread}
           />
         ) : null}
 
@@ -537,6 +557,7 @@ export function FloatingCommandMenu({
             buildThreads={buildThreads}
             onImportCapsule={onImportCapsule}
             onPreviewWorkspace={onPreviewWorkspace}
+            onRepairWorkspacePreview={onRepairWorkspacePreview}
             onModifyWorkspace={onModifyWorkspace}
             onExportWorkspace={onExportWorkspace}
             onReleaseWorkspace={onReleaseWorkspace}
@@ -1165,9 +1186,9 @@ interface CreateTaskSurfaceProps {
   workspaceCount: number;
   onCreatePromptChange: (value: string) => void;
   onContinuePromptChange: (value: string) => void;
-  onPickPrompt: (value: string) => void;
   onStart: () => void;
   onToggleTaskRail: () => void;
+  onOpenTaskRail: () => void;
   onCloseTaskRail: () => void;
   onRuntimeChoiceChange: (runtimeChoice: RuntimeChoice) => void;
   onAgentChange: (agentId: string) => void;
@@ -1176,6 +1197,7 @@ interface CreateTaskSurfaceProps {
   onContinue: () => void;
   onCancel: () => void;
   onDelete: (threadId: string) => void;
+  onRepairPreviewBlockedThread: (thread: BuildThreadSummary) => void;
 }
 
 function CreateTaskSurface({
@@ -1202,9 +1224,9 @@ function CreateTaskSurface({
   workspaceCount,
   onCreatePromptChange,
   onContinuePromptChange,
-  onPickPrompt,
   onStart,
   onToggleTaskRail,
+  onOpenTaskRail,
   onCloseTaskRail,
   onRuntimeChoiceChange,
   onAgentChange,
@@ -1213,9 +1235,14 @@ function CreateTaskSurface({
   onContinue,
   onCancel,
   onDelete,
+  onRepairPreviewBlockedThread,
 }: CreateTaskSurfaceProps) {
   const { t } = useDesktopLocale();
   const isContinuingTask = activeThread !== null;
+  const hasThreadHistory = threads.length > 0;
+  const shouldShowThreadChrome = isContinuingTask || hasThreadHistory;
+  const shouldShowTaskRail = hasThreadHistory && isTaskRailOpen;
+  const didAutoOpenHistoryRailRef = useRef(false);
   const composerValue = isContinuingTask ? continuePrompt : createPrompt;
   const onComposerChange = isContinuingTask ? onContinuePromptChange : onCreatePromptChange;
   const [openComposerMenu, setOpenComposerMenu] = useState<"agent" | "runtime" | null>(null);
@@ -1264,12 +1291,20 @@ function CreateTaskSurface({
   useEffect(() => {
     if (activeThread) {
       setOpenComposerMenu(null);
+      didAutoOpenHistoryRailRef.current = false;
     }
   }, [activeThread?.id]);
 
+  useEffect(() => {
+    if (activeThread || !hasThreadHistory || isTaskRailOpen) return;
+    if (didAutoOpenHistoryRailRef.current) return;
+    didAutoOpenHistoryRailRef.current = true;
+    onOpenTaskRail();
+  }, [activeThread, hasThreadHistory, isTaskRailOpen, onOpenTaskRail]);
+
   const startNew = () => {
     onStartNew();
-    if (!isPinned) {
+    if (!isPinned && !hasThreadHistory) {
       onCloseTaskRail();
     }
   };
@@ -1280,59 +1315,94 @@ function CreateTaskSurface({
     }
   };
 
+  const surfaceClassName = [
+    "create-task-surface",
+    activeThread ? "is-thread" : "is-draft",
+    !activeThread && !hasThreadHistory ? "is-empty-draft" : "",
+    !activeThread && hasThreadHistory ? "has-thread-history" : "",
+    shouldShowTaskRail ? "is-rail-open" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div className={`create-task-surface ${isTaskRailOpen ? "is-rail-open" : ""}`}>
-      <div className="create-task-toolbar">
-        <button
-          className="task-rail-toggle"
-          type="button"
-          aria-label={isTaskRailOpen ? t("task.hideRail") : t("task.showRail")}
-          title={isTaskRailOpen ? t("task.hideRail") : t("task.showRail")}
-          aria-pressed={isTaskRailOpen}
-          onClick={onToggleTaskRail}
-          data-no-drag
-        >
-          {isTaskRailOpen ? (
-            <PanelLeftClose aria-hidden="true" />
-          ) : (
-            <PanelLeftOpen aria-hidden="true" />
-          )}
-        </button>
-        <div>
-          <span>{t("task.create")}</span>
-          <strong>{activeThread ? activeThread.title : t("task.describeNew")}</strong>
+    <div className={surfaceClassName}>
+      {shouldShowThreadChrome ? (
+        <div className="create-task-toolbar">
+          <button
+            className="task-rail-toggle"
+            type="button"
+            aria-label={shouldShowTaskRail ? t("task.hideRail") : t("task.showRail")}
+            title={shouldShowTaskRail ? t("task.hideRail") : t("task.showRail")}
+            aria-pressed={shouldShowTaskRail}
+            onClick={onToggleTaskRail}
+            data-no-drag
+          >
+            {shouldShowTaskRail ? (
+              <PanelLeftClose aria-hidden="true" />
+            ) : (
+              <PanelLeftOpen aria-hidden="true" />
+            )}
+          </button>
+          <div>
+            <span>{t("task.create")}</span>
+            <strong>{activeThread?.title ?? t("task.new")}</strong>
+          </div>
+          {activeThread ? (
+            <button
+              className="task-new-button"
+              type="button"
+              disabled={isBusy}
+              aria-pressed={false}
+              onClick={startNew}
+              data-no-drag
+            >
+              {t("task.new")}
+            </button>
+          ) : null}
         </div>
-        <button
-          className={`task-new-button ${activeThread ? "" : "is-active"}`}
-          type="button"
-          disabled={isBusy}
-          aria-pressed={!activeThread}
-          onClick={startNew}
-          data-no-drag
-        >
-          {t("task.new")}
-        </button>
-      </div>
+      ) : null}
 
       <div className="create-task-layout">
-        <TaskRail
-          threads={threads}
-          activeThread={activeThread}
-          isBusy={isBusy}
-          isOpen={isTaskRailOpen}
-          onStartNew={startNew}
-          onSelect={selectThread}
-          onDelete={onDelete}
-        />
+        {shouldShowThreadChrome ? (
+          <TaskRail
+            threads={threads}
+            activeThread={activeThread}
+            isBusy={isBusy}
+            isOpen={shouldShowTaskRail}
+            onStartNew={startNew}
+            onSelect={selectThread}
+            onDelete={onDelete}
+          />
+        ) : null}
 
-        <main className="create-task-main">
+        <main
+          className={`create-task-main ${
+            activeThread ? "create-task-main--thread" : "create-task-main--draft"
+          }`}
+        >
           {activeThread ? (
-            <TaskConversationPanel
-              activeThread={activeThread}
-              detail={detail}
-              isBusy={isBusy}
-              onCancel={onCancel}
-            />
+            <>
+              <div className="create-task-session-slot">
+                <TaskConversationPanel
+                  activeThread={activeThread}
+                  detail={detail}
+                  isBusy={isBusy}
+                  onCancel={onCancel}
+                  onRepairPreviewBlockedThread={onRepairPreviewBlockedThread}
+                />
+              </div>
+
+              <div className="create-task-context-stack">
+                {promptEnvelopeSummary ? (
+                  <PromptEnvelopeSummaryPanel summary={promptEnvelopeSummary} />
+                ) : null}
+
+                {runtimePreflightMessage ? (
+                  <RuntimePreflightPanel message={runtimePreflightMessage} />
+                ) : null}
+              </div>
+            </>
           ) : null}
 
           <section
@@ -1393,9 +1463,11 @@ function CreateTaskSurface({
               </div>
 
               <div className="create-composer-right">
-                <section className="create-composer-status" aria-label={t("composer.status")}>
-                  <ComposerStatusSummary statuses={composerStatusItems} />
-                </section>
+                {activeThread ? (
+                  <section className="create-composer-status" aria-label={t("composer.status")}>
+                    <ComposerStatusSummary statuses={composerStatusItems} />
+                  </section>
+                ) : null}
                 {activeThread ? (
                   <button
                     className="composer-submit-button"
@@ -1426,33 +1498,6 @@ function CreateTaskSurface({
               </div>
             </div>
           </section>
-
-          {!activeThread ? (
-            <div className="create-task-examples">
-              <QuickPromptExamples disabled={isBusy} onPick={onPickPrompt} />
-            </div>
-          ) : null}
-
-          {promptEnvelopeSummary ? (
-            <PromptEnvelopeSummaryPanel summary={promptEnvelopeSummary} />
-          ) : null}
-
-          {!activeThread && runtimeChoice === "auto" ? (
-            <IntentSelectionPanel selection={intentSelection} />
-          ) : null}
-
-          {runtimePreflightMessage ? (
-            <RuntimePreflightPanel message={runtimePreflightMessage} />
-          ) : null}
-
-          {!activeThread ? (
-            <TaskConversationPanel
-              activeThread={activeThread}
-              detail={detail}
-              isBusy={isBusy}
-              onCancel={onCancel}
-            />
-          ) : null}
         </main>
       </div>
     </div>
@@ -1549,6 +1594,7 @@ interface TaskConversationPanelProps {
   detail: BuildThreadDetail | null;
   isBusy: boolean;
   onCancel: () => void;
+  onRepairPreviewBlockedThread: (thread: BuildThreadSummary) => void;
 }
 
 function TaskConversationPanel({
@@ -1556,6 +1602,7 @@ function TaskConversationPanel({
   detail,
   isBusy,
   onCancel,
+  onRepairPreviewBlockedThread,
 }: TaskConversationPanelProps) {
   const { t } = useDesktopLocale();
   const entries = useMemo(() => visibleThreadEntries(detail), [detail]);
@@ -1582,6 +1629,13 @@ function TaskConversationPanel({
               </div>
             </header>
             {errorSummary ? <p className="thread-error">{errorSummary}</p> : null}
+            {activeThread.status === "preview-blocked" ? (
+              <PreviewBlockedCallout
+                thread={activeThread}
+                disabled={isBusy}
+                onRepair={onRepairPreviewBlockedThread}
+              />
+            ) : null}
             <div className="thread-entry-list task-timeline">
               {timelineItems.map((item) => (
                 <TaskTimelineItem key={item.id} item={item} />
@@ -1595,6 +1649,41 @@ function TaskConversationPanel({
           </div>
         )}
       </article>
+    </section>
+  );
+}
+
+interface PreviewBlockedCalloutProps {
+  thread: BuildThreadSummary;
+  disabled: boolean;
+  onRepair: (thread: BuildThreadSummary) => void;
+}
+
+function PreviewBlockedCallout({ thread, disabled, onRepair }: PreviewBlockedCalloutProps) {
+  const { t } = useDesktopLocale();
+  const issueSummary = thread.previewIssue?.summary ?? t("task.previewBlockedCopy");
+  return (
+    <section className="thread-preview-blocked" role="status">
+      <div className="thread-preview-blocked__icon" aria-hidden="true">
+        <AlertTriangle size={16} />
+      </div>
+      <div>
+        <strong>{t("task.previewBlockedTitle")}</strong>
+        <p>{issueSummary}</p>
+        <div className="thread-preview-blocked__meta">
+          <code>{thread.runtimeKind}</code>
+          {thread.previewIssue?.kind ? <code>{thread.previewIssue.kind}</code> : null}
+        </div>
+      </div>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => onRepair(thread)}
+        data-no-drag
+      >
+        <Wrench size={14} aria-hidden="true" />
+        {t("task.previewBlockedAction")}
+      </button>
     </section>
   );
 }
@@ -1618,7 +1707,7 @@ const TaskTimelineItem = memo(function TaskTimelineItem({ item }: TaskTimelineIt
         .join(" ")}
     >
       <div className="task-timeline-row__icon" aria-hidden="true">
-        {item.icon}
+        <TaskTimelineIcon item={item} />
       </div>
       <article className="task-timeline-card">
         <header className="task-timeline-card__header">
@@ -1670,6 +1759,21 @@ const TaskTimelineItem = memo(function TaskTimelineItem({ item }: TaskTimelineIt
   );
 });
 
+function TaskTimelineIcon({ item }: TaskTimelineItemProps) {
+  const props = { size: 14, strokeWidth: 2.2 } as const;
+  if (item.kind === "tool") return <Wrench {...props} />;
+  if (item.kind === "terminal") return <Terminal {...props} />;
+  if (item.kind === "file") return <FileText {...props} />;
+  if (item.kind === "approval") {
+    return item.tone === "warning" ? <AlertTriangle {...props} /> : <ShieldCheck {...props} />;
+  }
+  if (item.kind === "error") return <AlertTriangle {...props} />;
+  if (item.kind === "assistant" || item.kind === "progress" || item.kind === "runtime") {
+    return item.isActive ? <LoaderCircle {...props} /> : <Bot {...props} />;
+  }
+  return <MessageSquare {...props} />;
+}
+
 function formatTimelineTime(timestamp: string, locale: string): string {
   const date = new Date(timestamp);
   if (Number.isNaN(date.getTime())) {
@@ -1679,6 +1783,71 @@ function formatTimelineTime(timestamp: string, locale: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+type ComposerMenuPlacement = "above" | "below";
+
+interface ComposerMenuPosition {
+  placement: ComposerMenuPlacement;
+  maxHeight: number;
+}
+
+function useComposerMenuPosition(
+  isOpen: boolean,
+  preferredHeight: number,
+): {
+  rootRef: RefObject<HTMLDivElement | null>;
+  placement: ComposerMenuPlacement;
+  menuStyle: CSSProperties;
+} {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<ComposerMenuPosition>({
+    placement: "below",
+    maxHeight: preferredHeight,
+  });
+
+  useLayoutEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const updatePosition = () => {
+      const root = rootRef.current;
+      if (!root) {
+        return;
+      }
+
+      const rect = root.getBoundingClientRect();
+      const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+      const spaceBelow = Math.max(0, viewportHeight - rect.bottom);
+      const spaceAbove = Math.max(0, rect.top);
+      const menuGap = 12;
+      const opensAbove = spaceBelow < preferredHeight + menuGap && spaceAbove > spaceBelow;
+      const availableSpace = Math.max(0, (opensAbove ? spaceAbove : spaceBelow) - menuGap);
+      const maxHeight = Math.max(120, Math.min(preferredHeight, availableSpace));
+
+      setPosition({
+        placement: opensAbove ? "above" : "below",
+        maxHeight,
+      });
+    };
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [isOpen, preferredHeight]);
+
+  return {
+    rootRef,
+    placement: position.placement,
+    menuStyle: {
+      "--composer-menu-max-height": `${position.maxHeight}px`,
+    } as CSSProperties,
+  };
 }
 
 interface AgentSelectorPanelProps {
@@ -1703,9 +1872,15 @@ function AgentSelectorPanel({
   const { t } = useDesktopLocale();
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
   const selectorLabel = selectedAgent?.label ?? t("menu.unconfigured");
+  const menuPosition = useComposerMenuPosition(isOpen, agents.length === 0 ? 160 : 260);
 
   return (
-    <div className={`composer-picker ${isOpen ? "is-open" : ""}`}>
+    <div
+      ref={menuPosition.rootRef}
+      className={`composer-picker composer-picker--${menuPosition.placement} ${
+        isOpen ? "is-open" : ""
+      }`}
+    >
       <button
         className="composer-picker__trigger composer-picker__trigger--agent"
         type="button"
@@ -1726,7 +1901,12 @@ function AgentSelectorPanel({
         </span>
       </button>
       {isOpen ? (
-        <div className="composer-picker__menu" role="listbox" aria-label={t("composer.agentSelect", { label: selectorLabel })}>
+        <div
+          className="composer-picker__menu"
+          style={menuPosition.menuStyle}
+          role="listbox"
+          aria-label={t("composer.agentSelect", { label: selectorLabel })}
+        >
           {agents.length === 0 ? (
             <div className="composer-picker__empty">
               <strong>{t("agent.notConfigured")}</strong>
@@ -1786,9 +1966,15 @@ function RuntimeSelectorPanel({
   );
   const selectedRuntimeLabel = runtimeOptionLabel(selectedRuntime.kind, t);
   const selectedRuntimeDetail = runtimeOptionDetail(selectedRuntime.kind, t);
+  const menuPosition = useComposerMenuPosition(isOpen, 420);
 
   return (
-    <div className={`composer-picker composer-picker--runtime ${isOpen ? "is-open" : ""}`}>
+    <div
+      ref={menuPosition.rootRef}
+      className={`composer-picker composer-picker--runtime composer-picker--${menuPosition.placement} ${
+        isOpen ? "is-open" : ""
+      }`}
+    >
       <button
         className="composer-picker__trigger"
         type="button"
@@ -1811,6 +1997,7 @@ function RuntimeSelectorPanel({
       {isOpen ? (
         <div
           className="composer-picker__menu composer-picker__menu--runtime"
+          style={menuPosition.menuStyle}
           role="listbox"
           aria-label={t("composer.runtimeMenu")}
         >
@@ -2339,6 +2526,7 @@ interface WorkspaceListPanelProps {
   buildThreads: BuildThreadSummary[];
   onImportCapsule: () => void;
   onPreviewWorkspace: (workspace: WorkspaceSummary) => void;
+  onRepairWorkspacePreview: (workspace: WorkspaceSummary) => void;
   onModifyWorkspace: (workspace: WorkspaceSummary) => void;
   onExportWorkspace: (workspace: WorkspaceSummary) => void;
   onReleaseWorkspace: (workspace: WorkspaceSummary) => void;
@@ -2356,6 +2544,7 @@ function WorkspaceListPanel({
   buildThreads,
   onImportCapsule,
   onPreviewWorkspace,
+  onRepairWorkspacePreview,
   onModifyWorkspace,
   onExportWorkspace,
   onReleaseWorkspace,
@@ -2389,6 +2578,10 @@ function WorkspaceListPanel({
             const isPreviewing = activePreviewAppId === workspace.appId;
             const buildThread = getWorkspaceBuildThread(workspace, buildThreads);
             const canModify = canContinueBuildThread(buildThread);
+            const isPreviewBlocked = buildThread?.status === "preview-blocked";
+            const previewActionLabel = isPreviewBlocked
+              ? t("workspace.fixPreview")
+              : isPreviewing ? t("workspace.opening") : t("action.preview");
 
             return (
               <div key={workspace.appId} className="workspace-row">
@@ -2403,7 +2596,10 @@ function WorkspaceListPanel({
                   <div className="workspace-row__meta">
                     <span>{workspace.name}</span>
                     <small>
-                      {formatWorkspaceRuntime(workspace.mode, t)} / {formatWorkspaceUpdatedAt(workspace.updatedAt, locale, t)}
+                      {formatWorkspaceRuntime(workspace.mode, t)} /{" "}
+                      {isPreviewBlocked
+                        ? t("workspace.previewBlocked")
+                        : formatWorkspaceUpdatedAt(workspace.updatedAt, locale, t)}
                     </small>
                   </div>
                 </div>
@@ -2411,15 +2607,19 @@ function WorkspaceListPanel({
                   <button
                     className={`workspace-icon-button workspace-row__preview ${
                       isPreviewing ? "is-active" : ""
-                    }`}
+                    } ${isPreviewBlocked ? "is-warning" : ""}`}
                     type="button"
                     disabled={isBusy}
-                    title={isPreviewing ? t("workspace.opening") : t("action.preview")}
-                    aria-label={`${isPreviewing ? t("workspace.opening") : t("action.preview")} ${workspace.name}`}
-                    onClick={() => onPreviewWorkspace(workspace)}
+                    title={previewActionLabel}
+                    aria-label={`${previewActionLabel} ${workspace.name}`}
+                    onClick={() =>
+                      isPreviewBlocked
+                        ? onRepairWorkspacePreview(workspace)
+                        : onPreviewWorkspace(workspace)
+                    }
                     data-no-drag
                   >
-                    <Eye aria-hidden="true" />
+                    {isPreviewBlocked ? <Wrench aria-hidden="true" /> : <Eye aria-hidden="true" />}
                   </button>
                   <button
                     className="workspace-icon-button workspace-row__modify"

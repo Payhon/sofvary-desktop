@@ -80,10 +80,14 @@ pub struct GeneratedProjectFile {
 }
 
 const REACT_SQLITE_MANAGED_PACKAGE_DEPENDENCIES: &[(&str, &str)] = &[
+    ("@types/cors", "2.8.19"),
+    ("@types/express", "5.0.6"),
     ("@vitejs/plugin-react", "5.2.0"),
     ("@types/node", "24.12.4"),
     ("@types/react", "19.2.15"),
     ("@types/react-dom", "19.2.3"),
+    ("cors", "2.8.6"),
+    ("express", "5.2.1"),
     ("sql.js", "1.14.1"),
     ("tsx", "4.22.3"),
     ("typescript", "5.9.3"),
@@ -552,6 +556,45 @@ impl WorkspaceManager {
         }
 
         Ok(written)
+    }
+
+    pub fn prepare_react_sqlite_workspace_for_preview(
+        &self,
+        manifest: &AppBoxManifest,
+    ) -> WorkspaceResult<()> {
+        self.normalize_react_sqlite_workspace_package(manifest)?;
+        self.normalize_react_sqlite_vite_config(manifest)?;
+        Ok(())
+    }
+
+    pub fn normalize_react_sqlite_workspace_package(
+        &self,
+        manifest: &AppBoxManifest,
+    ) -> WorkspaceResult<()> {
+        let manifest = self.validate_manifest_paths(manifest.clone(), &manifest.paths.root)?;
+        let generated_root = self.ensure_generated_root_inside_workspace(&manifest)?;
+        let package_path = self.ensure_child(&generated_root, Path::new("react/package.json"))?;
+        let contents = fs::read_to_string(&package_path)?;
+        let normalized = normalize_react_sqlite_package_json(&contents)?;
+        if normalized != contents {
+            self.enforce_file_write_policy(&manifest, &package_path)?;
+            fs::File::create(&package_path)?.write_all(normalized.as_bytes())?;
+        }
+        Ok(())
+    }
+
+    fn normalize_react_sqlite_vite_config(&self, manifest: &AppBoxManifest) -> WorkspaceResult<()> {
+        let manifest = self.validate_manifest_paths(manifest.clone(), &manifest.paths.root)?;
+        let generated_root = self.ensure_generated_root_inside_workspace(&manifest)?;
+        let vite_config_path =
+            self.ensure_child(&generated_root, Path::new("react/vite.config.ts"))?;
+        let contents = fs::read_to_string(&vite_config_path)?;
+        let normalized = normalize_react_sqlite_vite_config(&contents);
+        if normalized != contents {
+            self.enforce_file_write_policy(&manifest, &vite_config_path)?;
+            fs::File::create(&vite_config_path)?.write_all(normalized.as_bytes())?;
+        }
+        Ok(())
     }
 
     pub fn replace_generated_canvas2d_files(
@@ -1076,6 +1119,49 @@ fn normalize_react_sqlite_package_json(contents: &str) -> WorkspaceResult<String
     serde_json::to_string_pretty(&Value::Object(normalized))
         .map(|value| value + "\n")
         .map_err(WorkspaceError::from)
+}
+
+fn normalize_react_sqlite_vite_config(contents: &str) -> String {
+    let mut normalized = contents.to_string();
+    let replacements = [
+        (
+            "'http://127.0.0.1:4177'",
+            "`http://127.0.0.1:${sofvaryApiPort}`",
+        ),
+        (
+            "\"http://127.0.0.1:4177\"",
+            "`http://127.0.0.1:${sofvaryApiPort}`",
+        ),
+        (
+            "'http://localhost:4177'",
+            "`http://127.0.0.1:${sofvaryApiPort}`",
+        ),
+        (
+            "\"http://localhost:4177\"",
+            "`http://127.0.0.1:${sofvaryApiPort}`",
+        ),
+    ];
+    let mut changed = false;
+    for (from, to) in replacements {
+        if normalized.contains(from) {
+            normalized = normalized.replace(from, to);
+            changed = true;
+        }
+    }
+    if changed && !normalized.contains("SOFVARY_API_PORT") {
+        let api_port_config =
+            "const sofvaryApiPort = process.env.SOFVARY_API_PORT ?? \"4177\";\n\n";
+        normalized = if normalized.contains("export default") {
+            normalized.replacen(
+                "export default",
+                &(api_port_config.to_string() + "export default"),
+                1,
+            )
+        } else {
+            api_port_config.to_string() + &normalized
+        };
+    }
+    normalized
 }
 
 fn react_sqlite_managed_package_scripts() -> Map<String, Value> {
@@ -2392,10 +2478,106 @@ mod tests {
         assert_eq!(package["dependencies"]["vite"], "7.3.3");
         assert_eq!(package["dependencies"]["@vitejs/plugin-react"], "5.2.0");
         assert_eq!(package["dependencies"]["react"], "19.2.6");
+        assert_eq!(package["dependencies"]["express"], "5.2.1");
+        assert_eq!(package["dependencies"]["cors"], "2.8.6");
         assert_eq!(package["dependencies"]["sql.js"], "1.14.1");
         assert_eq!(package["dependencies"]["@types/node"], "24.12.4");
+        assert_eq!(package["dependencies"]["@types/express"], "5.0.6");
+        assert_eq!(package["dependencies"]["@types/cors"], "2.8.19");
+        assert!(package["dependencies"]["better-sqlite3"].is_null());
         assert_eq!(package["devDependencies"].as_object().unwrap().len(), 0);
         assert_eq!(package["scripts"]["api"], "tsx server/index.ts");
+    }
+
+    #[test]
+    fn normalizes_existing_react_sqlite_workspace_package_json_before_preview() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let adapter = TempAdapter {
+            dirs: PlatformDirs {
+                data_dir: temp.path().join("data"),
+                cache_dir: temp.path().join("cache"),
+                config_dir: temp.path().join("config"),
+            },
+        };
+        let manager = WorkspaceManager::new();
+        let manifest = manager
+            .create_workspace_for_runtime_with_adapter(
+                "SQLite Existing Package Normalize".to_string(),
+                RuntimeKind::ReactSqlite,
+                &adapter,
+            )
+            .expect("workspace");
+        let package_path = manifest.paths.generated.join("react/package.json");
+        fs::create_dir_all(package_path.parent().expect("package parent")).expect("parent");
+        fs::write(
+            &package_path,
+            r#"{"name":"old","dependencies":{"vite":"0.0.1","better-sqlite3":"12.0.0"}}"#,
+        )
+        .expect("old package");
+
+        manager
+            .normalize_react_sqlite_workspace_package(&manifest)
+            .expect("normalize existing package");
+
+        let package: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(package_path).expect("package"))
+                .expect("package json");
+        assert_eq!(package["dependencies"]["vite"], "7.3.3");
+        assert_eq!(package["dependencies"]["express"], "5.2.1");
+        assert_eq!(package["dependencies"]["cors"], "2.8.6");
+        assert_eq!(package["dependencies"]["sql.js"], "1.14.1");
+        assert!(package["dependencies"]["better-sqlite3"].is_null());
+    }
+
+    #[test]
+    fn preview_preparation_normalizes_hardcoded_react_sqlite_vite_proxy() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let adapter = TempAdapter {
+            dirs: PlatformDirs {
+                data_dir: temp.path().join("data"),
+                cache_dir: temp.path().join("cache"),
+                config_dir: temp.path().join("config"),
+            },
+        };
+        let manager = WorkspaceManager::new();
+        let manifest = manager
+            .create_workspace_for_runtime_with_adapter(
+                "SQLite Existing Vite Normalize".to_string(),
+                RuntimeKind::ReactSqlite,
+                &adapter,
+            )
+            .expect("workspace");
+        let react_root = manifest.paths.generated.join("react");
+        fs::create_dir_all(&react_root).expect("react");
+        fs::write(
+            react_root.join("package.json"),
+            r#"{"name":"old","dependencies":{"vite":"0.0.1"}}"#,
+        )
+        .expect("package");
+        fs::write(
+            react_root.join("vite.config.ts"),
+            r#"import { defineConfig } from 'vite';
+
+export default defineConfig({
+  server: {
+    proxy: {
+      '/api': 'http://127.0.0.1:4177'
+    }
+  }
+});
+"#,
+        )
+        .expect("vite config");
+
+        manager
+            .prepare_react_sqlite_workspace_for_preview(&manifest)
+            .expect("prepare preview");
+
+        let vite_config =
+            fs::read_to_string(react_root.join("vite.config.ts")).expect("vite config");
+        assert!(vite_config.contains("SOFVARY_API_PORT"));
+        assert!(vite_config.contains("`http://127.0.0.1:${sofvaryApiPort}`"));
+        assert!(!vite_config.contains("http://127.0.0.1:4177"));
     }
 
     #[test]
