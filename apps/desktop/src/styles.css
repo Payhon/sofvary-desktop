@@ -3964,6 +3964,42 @@ textarea:disabled {
   opacity: 0.58;
 }
 
+.handoff-action-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgba(8, 47, 73, 0.22);
+}
+
+.handoff-action-bar button {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(125, 211, 252, 0.22);
+  border-radius: 8px;
+  padding: 0 9px;
+  background: rgba(14, 116, 144, 0.18);
+  color: #dff7ff;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.handoff-action-bar button svg {
+  flex: 0 0 auto;
+}
+
+.handoff-action-bar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .thread-entry {
   display: grid;
   gap: 6px;
@@ -5375,6 +5411,17 @@ textarea:disabled {
 .command-shell[data-theme="light"] .thread-preview-blocked__meta code {
   border-color: rgba(217, 119, 6, 0.2);
   background: rgba(245, 158, 11, 0.1);
+}
+
+.command-shell[data-theme="light"] .handoff-action-bar {
+  border-color: rgba(14, 116, 144, 0.18);
+  background: rgba(236, 254, 255, 0.86);
+}
+
+.command-shell[data-theme="light"] .handoff-action-bar button {
+  border-color: rgba(14, 116, 144, 0.2);
+  background: rgba(8, 145, 178, 0.1);
+  color: #155e75;
 }
 
 .command-shell[data-theme="light"] .workspace-row,

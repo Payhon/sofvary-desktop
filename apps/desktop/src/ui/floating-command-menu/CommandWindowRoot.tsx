@@ -28,10 +28,14 @@ import {
   upsertAgentConfig,
 } from "../../core/agents/agentClient";
 import {
+  formatAgentInteractionMode,
   formatAgentTestRecord,
+  getAgentInteractionModes,
   getAgentStatusLine,
+  getDefaultAgentInteractionMode,
   getSelectableAgents,
   getSelectedAgentId,
+  normalizeAgentInteractionMode,
 } from "../../core/agents/agentLogic";
 import {
   cancelAgentInstall,
@@ -49,9 +53,14 @@ import {
   analyzeBuildIntent,
   cancelBuildThread,
   continueBuildThread,
+  copyHandoffPrompt,
+  copyHandoffRepairPrompt,
   deleteBuildThread,
   getBuildThread,
   listBuildThreads,
+  openHandoffAgent,
+  openHandoffWorkspace,
+  rescanHandoffWorkspace,
   retryBuildThreadPreview,
   startBuildThread,
 } from "../../core/buildThreads/buildThreadClient";
@@ -145,6 +154,7 @@ import type {
   DeepLinkInstallPreflight,
   AgentConfig,
   AgentConfigState,
+  AgentInteractionMode,
   AgentInstallStatus,
   AppReleaseCapability,
   AppReleaseTargetPlatform,
@@ -220,6 +230,7 @@ export function CommandWindowRoot() {
   const activeThreadDetailRef = useRef<BuildThreadDetail | null>(null);
   const [discoveredAgents, setDiscoveredAgents] = useState<DiscoveredAgent[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [selectedAgentMode, setSelectedAgentMode] = useState<AgentInteractionMode>("pi-native");
   const [agentStatusOverride, setAgentStatusOverride] = useState<string | null>(null);
   const [agentInstallStatuses, setAgentInstallStatuses] = useState<AgentInstallStatus[]>([]);
   const [activeAgentInstallId, setActiveAgentInstallId] = useState<string | null>(null);
@@ -353,6 +364,14 @@ export function CommandWindowRoot() {
   const activeAgent = useMemo(
     () => agentState.agents.find((agent) => agent.id === activeAgentId) ?? null,
     [activeAgentId, agentState.agents],
+  );
+  const availableAgentModes = useMemo(
+    () => getAgentInteractionModes(activeAgent),
+    [activeAgent],
+  );
+  const activeAgentMode = useMemo(
+    () => normalizeAgentInteractionMode(activeAgent, selectedAgentMode),
+    [activeAgent, selectedAgentMode],
   );
   const agentStatusLine = agentStatusOverride ?? getAgentStatusLine(activeAgent, t);
   const defaultLlmProvider = useMemo(
@@ -523,6 +542,10 @@ export function CommandWindowRoot() {
   useEffect(() => {
     activeThreadDetailRef.current = activeThreadDetail;
   }, [activeThreadDetail]);
+
+  useEffect(() => {
+    setSelectedAgentMode(getDefaultAgentInteractionMode(activeAgent));
+  }, [activeAgent]);
 
   useEffect(() => {
     refreshWorkspaces();
@@ -1165,6 +1188,28 @@ export function CommandWindowRoot() {
     }
   };
 
+  const changeAgentMode = async (mode: AgentInteractionMode) => {
+    const normalizedMode = normalizeAgentInteractionMode(activeAgent, mode);
+    setSelectedAgentMode(normalizedMode);
+    if (!activeAgent || activeAgent.provider === "sofvary-pi") {
+      return;
+    }
+    if (activeAgent.defaultInteractionMode === normalizedMode) {
+      return;
+    }
+
+    try {
+      const state = await upsertAgentConfig({
+        ...activeAgent,
+        defaultInteractionMode: normalizedMode,
+      });
+      setAgentState(state);
+      setAgentStatusOverride(formatAgentInteractionMode(normalizedMode, t));
+    } catch (error) {
+      setAgentStatusOverride(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const testAgent = async (agentId: string) => {
     setAgentStatusOverride(t("agent.status.testing"));
     try {
@@ -1447,6 +1492,7 @@ export function CommandWindowRoot() {
         "dev",
         policyApprovals,
         agentId,
+        activeAgentMode,
       );
       setActiveThreadId(thread.id);
       setBuildThreads((current) => upsertBuildThreadSummary(current, thread));
@@ -1491,7 +1537,12 @@ export function CommandWindowRoot() {
         { scope: "runtime-build", runtimeKind: activeThread.runtimeKind, mode: activeThread.runtimeMode, agentId: activeThread.agentId },
         t("policy.dialog.continueRuntime", { runtimeKind: activeThread.runtimeKind }),
       );
-      const thread = await continueBuildThread(activeThread.id, continuePrompt, policyApprovals);
+      const thread = await continueBuildThread(
+        activeThread.id,
+        continuePrompt,
+        policyApprovals,
+        activeThread.agentMode,
+      );
       setBuildThreads((current) => upsertBuildThreadSummary(current, thread));
       setActiveThreadId(thread.id);
       setContinuePrompt("");
@@ -1511,6 +1562,99 @@ export function CommandWindowRoot() {
     try {
       const thread = await cancelBuildThread(activeThread.id);
       setBuildThreads((current) => upsertBuildThreadSummary(current, thread));
+    } catch (error) {
+      setAgentStatusOverride(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const syncHandoffThread = (thread: BuildThreadSummary) => {
+    setBuildThreads((current) => upsertBuildThreadSummary(current, thread));
+    setActiveThreadId(thread.id);
+    refreshActiveThread(thread.id);
+  };
+
+  const copyTextToClipboard = async (value: string) => {
+    if (!navigator.clipboard?.writeText) {
+      throw new Error("Clipboard API is not available in this window.");
+    }
+    await navigator.clipboard.writeText(value);
+  };
+
+  const copyActiveHandoffPrompt = async () => {
+    if (!activeThread) return;
+    try {
+      const result = await copyHandoffPrompt(activeThread.id);
+      await copyTextToClipboard(result.prompt);
+      syncHandoffThread(result.thread);
+      setAgentStatusOverride(t("task.handoff.copyPrompt"));
+    } catch (error) {
+      setAgentStatusOverride(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const copyActiveHandoffRepairPrompt = async () => {
+    if (!activeThread) return;
+    try {
+      const result = await copyHandoffRepairPrompt(activeThread.id);
+      await copyTextToClipboard(result.prompt);
+      syncHandoffThread(result.thread);
+      setAgentStatusOverride(t("task.handoff.copyRepairPrompt"));
+    } catch (error) {
+      setAgentStatusOverride(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const openActiveHandoffWorkspace = async () => {
+    if (!activeThread) return;
+    try {
+      const result = await openHandoffWorkspace(activeThread.id);
+      syncHandoffThread(result.thread);
+      setAgentStatusOverride(t("task.handoff.openWorkspace"));
+    } catch (error) {
+      setAgentStatusOverride(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const openActiveHandoffAgent = async () => {
+    if (!activeThread) return;
+    try {
+      const policyApprovals = await requestPolicyApprovals(
+        {
+          scope: "runtime-build",
+          runtimeKind: activeThread.runtimeKind,
+          mode: activeThread.runtimeMode,
+          agentId: activeThread.agentId,
+        },
+        t("task.handoff.openAgent"),
+      );
+      const result = await openHandoffAgent(activeThread.id, policyApprovals);
+      syncHandoffThread(result.thread);
+      setAgentStatusOverride(t("task.handoff.openAgent"));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== POLICY_APPROVAL_CANCELED) {
+        setAgentStatusOverride(message);
+      }
+    }
+  };
+
+  const rescanActiveHandoffWorkspace = async () => {
+    if (!activeThread) return;
+    try {
+      const result = await rescanHandoffWorkspace(activeThread.id);
+      syncHandoffThread(result.thread);
+      if (result.preview) {
+        setPromptEnvelopeSummary(result.preview.promptEnvelopeSummary);
+        await showMainWindow().catch(() => {
+          // Browser-only Vite sessions cannot open native Tauri windows.
+        });
+        await emitShellEvent("sofvary-runtime-preview", result.preview);
+        refreshWorkspaces();
+        if (!isPinned) {
+          await hideCommandWindow().catch(() => {});
+        }
+      }
+      setAgentStatusOverride(t("task.handoff.rescan"));
     } catch (error) {
       setAgentStatusOverride(error instanceof Error ? error.message : String(error));
     }
@@ -1724,6 +1868,8 @@ export function CommandWindowRoot() {
           runtimeEnvironmentStatusLine={runtimeEnvironmentStatusOverride}
           selectableAgents={selectableAgents}
           selectedAgentId={activeAgentId}
+          selectedAgentMode={activeAgentMode}
+          availableAgentModes={availableAgentModes}
           agentStatusLine={agentStatusLine}
           buildThreads={buildThreads}
           activeThread={activeThread}
@@ -1767,12 +1913,18 @@ export function CommandWindowRoot() {
             setRuntimePreflightMessage(null);
           }}
           onAgentChange={setSelectedAgentId}
+          onAgentModeChange={(mode) => void changeAgentMode(mode)}
           onSelectBuildThread={(threadId) => void selectBuildThread(threadId)}
           onStartNewBuildThreadDraft={startNewBuildThreadDraft}
           onContinueBuildThread={() => void continueActiveThread()}
           onCancelBuildThread={() => void cancelActiveThread()}
           onDeleteBuildThread={(threadId) => void deleteThread(threadId)}
           onRepairPreviewBlockedThread={(thread) => void repairPreviewBlockedThread(thread)}
+          onCopyHandoffPrompt={() => void copyActiveHandoffPrompt()}
+          onOpenHandoffWorkspace={() => void openActiveHandoffWorkspace()}
+          onOpenHandoffAgent={() => void openActiveHandoffAgent()}
+          onRescanHandoffWorkspace={() => void rescanActiveHandoffWorkspace()}
+          onCopyHandoffRepairPrompt={() => void copyActiveHandoffRepairPrompt()}
           onAddDiscoveredAgent={addDiscoveredAgent}
           onToggleAgentEnabled={toggleAgentEnabled}
           onSetDefaultAgent={makeDefaultAgent}

@@ -745,6 +745,7 @@ fn pi_agent_config(previous: Option<AgentConfig>, executable: PathBuf) -> AgentC
             source: AgentInstallSource::Bundled,
         }),
         allow_cli_fallback: false,
+        default_interaction_mode: None,
         last_test: previous_last_test,
     }
 }

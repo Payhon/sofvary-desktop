@@ -39,7 +39,8 @@ export type AgentProvider =
   | "deepseek-tui"
   | "sofvary-pi"
   | "custom";
-export type AgentTransportKind = "acp" | "cli" | "pi-rpc";
+export type AgentTransportKind = "acp" | "cli" | "pi-rpc" | "workspace-handoff";
+export type AgentInteractionMode = "pi-native" | "third-party-managed" | "workspace-handoff";
 export type AgentInstallSource =
   | "bundled"
   | "dev-override"
@@ -284,6 +285,7 @@ export interface BuildThreadSummary {
   runtimeKind: RuntimeKind;
   runtimeMode: RuntimeMode;
   agentId: string;
+  agentMode: AgentInteractionMode;
   createdAt: string;
   updatedAt: string;
   preview?: RuntimePreview | null;
@@ -294,6 +296,37 @@ export interface BuildThreadSummary {
 export interface BuildThreadPreviewRetryResult {
   thread: BuildThreadSummary;
   preview: RuntimePreview;
+}
+
+export interface HandoffPromptCopyResult {
+  thread: BuildThreadSummary;
+  prompt: string;
+}
+
+export interface HandoffActionResult {
+  thread: BuildThreadSummary;
+}
+
+export interface HandoffFileState {
+  relativePath: string;
+  exists: boolean;
+  sizeBytes: number;
+}
+
+export interface HandoffScanResult {
+  complete: boolean;
+  generatedRoot: string;
+  files: HandoffFileState[];
+  missingFiles: string[];
+  statusEntries: string[];
+  validateRequested: boolean;
+  previewRequested: boolean;
+}
+
+export interface HandoffRescanResult {
+  thread: BuildThreadSummary;
+  scan: HandoffScanResult;
+  preview?: RuntimePreview | null;
 }
 
 export interface BuildThreadEntry {
@@ -453,6 +486,7 @@ export interface AgentConfig {
   acp?: AgentCommandConfig | null;
   cli?: AgentCommandConfig | null;
   allowCliFallback: boolean;
+  defaultInteractionMode?: AgentInteractionMode | null;
   lastTest?: AgentTestRecord | null;
 }
 

@@ -40,5 +40,8 @@ pub mod runtime_manager;
 pub mod runtime_selector;
 pub mod skill_registry;
 pub mod static_html_runtime;
+pub mod workspace_handoff;
+pub mod workspace_handoff_prompt;
+pub mod workspace_handoff_watcher;
 pub mod workspace_manager;
 pub mod workspace_types;

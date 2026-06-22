@@ -60,6 +60,7 @@ pub enum AgentTransportKind {
     Acp,
     Cli,
     PiRpc,
+    WorkspaceHandoff,
 }
 
 impl AgentTransportKind {
@@ -68,7 +69,22 @@ impl AgentTransportKind {
             Self::Acp => "acp",
             Self::Cli => "cli",
             Self::PiRpc => "pi-rpc",
+            Self::WorkspaceHandoff => "workspace-handoff",
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentInteractionMode {
+    PiNative,
+    ThirdPartyManaged,
+    WorkspaceHandoff,
+}
+
+impl Default for AgentInteractionMode {
+    fn default() -> Self {
+        Self::PiNative
     }
 }
 
@@ -117,6 +133,8 @@ pub struct AgentConfig {
     #[serde(default)]
     pub allow_cli_fallback: bool,
     #[serde(default)]
+    pub default_interaction_mode: Option<AgentInteractionMode>,
+    #[serde(default)]
     pub last_test: Option<AgentTestRecord>,
 }
 
@@ -126,6 +144,19 @@ impl AgentConfig {
             && (self.acp.is_some()
                 || (self.provider == AgentProvider::SofvaryPi && self.cli.is_some())
                 || (self.allow_cli_fallback && self.cli.is_some()))
+    }
+
+    pub fn effective_interaction_mode(&self) -> AgentInteractionMode {
+        self.default_interaction_mode
+            .unwrap_or_else(|| default_interaction_mode_for_provider(self.provider))
+    }
+}
+
+pub fn default_interaction_mode_for_provider(provider: AgentProvider) -> AgentInteractionMode {
+    if provider == AgentProvider::SofvaryPi {
+        AgentInteractionMode::PiNative
+    } else {
+        AgentInteractionMode::ThirdPartyManaged
     }
 }
 
@@ -352,6 +383,7 @@ mod tests {
                     acp: None,
                     cli: None,
                     allow_cli_fallback: false,
+                    default_interaction_mode: None,
                     last_test: None,
                 },
                 AgentConfig {
@@ -367,6 +399,7 @@ mod tests {
                     }),
                     cli: None,
                     allow_cli_fallback: false,
+                    default_interaction_mode: Some(AgentInteractionMode::WorkspaceHandoff),
                     last_test: None,
                 },
             ],
@@ -374,6 +407,10 @@ mod tests {
         .with_default();
 
         assert_eq!(state.default_agent_id.as_deref(), Some("opencode"));
+        assert_eq!(
+            state.agents[1].effective_interaction_mode(),
+            AgentInteractionMode::WorkspaceHandoff
+        );
     }
 
     #[test]

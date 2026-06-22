@@ -5,10 +5,15 @@ import type { AgentConfig, AgentConfigState, DiscoveredAgent } from "../../types
 import {
   discoverableAgentsToAdd,
   formatAgentTestRecord,
+  formatAgentInteractionMode,
+  formatAgentInteractionModeDetail,
   formatDiscoveredAgentStatus,
   getAgentStatusLine,
+  getAgentInteractionModes,
+  getDefaultAgentInteractionMode,
   getSelectableAgents,
   getSelectedAgentId,
+  normalizeAgentInteractionMode,
   sortAgents,
 } from "./agentLogic";
 
@@ -25,6 +30,7 @@ const baseAgent: AgentConfig = {
   },
   cli: null,
   allowCliFallback: false,
+  defaultInteractionMode: null,
   lastTest: null,
 };
 
@@ -104,5 +110,41 @@ test("discoverableAgentsToAdd hides configured agents", () => {
   assert.deepEqual(
     discoverableAgentsToAdd(discovered, [baseAgent]).map((agent) => agent.config.id),
     ["opencode"],
+  );
+});
+
+test("Sofvary Pi defaults to built-in native mode only", () => {
+  const piAgent: AgentConfig = {
+    ...baseAgent,
+    id: "sofvary-pi",
+    provider: "sofvary-pi",
+    label: "Sofvary Pi",
+    acp: null,
+    cli: { executable: "pi", args: [], env: {}, source: "bundled" },
+  };
+
+  assert.deepEqual(getAgentInteractionModes(piAgent), ["pi-native"]);
+  assert.equal(getDefaultAgentInteractionMode(piAgent), "pi-native");
+  assert.equal(normalizeAgentInteractionMode(piAgent, "workspace-handoff"), "pi-native");
+});
+
+test("third-party agents expose managed and handoff modes", () => {
+  assert.deepEqual(getAgentInteractionModes(baseAgent), ["third-party-managed", "workspace-handoff"]);
+  assert.equal(getDefaultAgentInteractionMode(baseAgent), "third-party-managed");
+  assert.equal(normalizeAgentInteractionMode(baseAgent, "workspace-handoff"), "workspace-handoff");
+  assert.equal(normalizeAgentInteractionMode(baseAgent, "pi-native"), "third-party-managed");
+});
+
+test("third-party default interaction mode is honored when configured", () => {
+  const handoffAgent: AgentConfig = {
+    ...baseAgent,
+    defaultInteractionMode: "workspace-handoff",
+  };
+
+  assert.equal(getDefaultAgentInteractionMode(handoffAgent), "workspace-handoff");
+  assert.equal(formatAgentInteractionMode("workspace-handoff"), "Workspace handoff");
+  assert.equal(
+    formatAgentInteractionModeDetail("workspace-handoff"),
+    "Prepare a bounded workspace for an external Agent.",
   );
 });

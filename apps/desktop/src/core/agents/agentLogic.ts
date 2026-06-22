@@ -1,4 +1,10 @@
-import type { AgentConfig, AgentConfigState, AgentTestRecord, DiscoveredAgent } from "../../types";
+import type {
+  AgentConfig,
+  AgentConfigState,
+  AgentInteractionMode,
+  AgentTestRecord,
+  DiscoveredAgent,
+} from "../../types";
 
 type Translator = (key: string, params?: Record<string, string | number | boolean | null | undefined>, fallback?: string) => string;
 
@@ -27,6 +33,45 @@ export function isAgentReady(agent: AgentConfig): boolean {
     agent.enabled &&
     Boolean(agent.acp || (agent.provider === "sofvary-pi" && agent.cli) || (agent.allowCliFallback && agent.cli))
   );
+}
+
+export function getAgentInteractionModes(agent: AgentConfig | null): AgentInteractionMode[] {
+  if (!agent) return ["pi-native"];
+  if (agent.provider === "sofvary-pi") return ["pi-native"];
+  return ["third-party-managed", "workspace-handoff"];
+}
+
+export function getDefaultAgentInteractionMode(agent: AgentConfig | null): AgentInteractionMode {
+  const modes = getAgentInteractionModes(agent);
+  if (agent?.defaultInteractionMode && modes.includes(agent.defaultInteractionMode)) {
+    return agent.defaultInteractionMode;
+  }
+  return modes[0] ?? "pi-native";
+}
+
+export function normalizeAgentInteractionMode(
+  agent: AgentConfig | null,
+  requestedMode?: AgentInteractionMode | null,
+): AgentInteractionMode {
+  const modes = getAgentInteractionModes(agent);
+  if (requestedMode && modes.includes(requestedMode)) {
+    return requestedMode;
+  }
+  return getDefaultAgentInteractionMode(agent);
+}
+
+export function formatAgentInteractionMode(
+  mode: AgentInteractionMode,
+  t: Translator = fallbackAgentT,
+): string {
+  return t(`agentMode.${mode}`);
+}
+
+export function formatAgentInteractionModeDetail(
+  mode: AgentInteractionMode,
+  t: Translator = fallbackAgentT,
+): string {
+  return t(`agentMode.${mode}.detail`);
 }
 
 export function getSelectedAgentId(
@@ -94,6 +139,12 @@ function fallbackAgentT(
     "agent.discovered.acp": "ACP available via {path}",
     "agent.discovered.cli": "CLI fallback available via {path}",
     "agent.discovered.notFound": "Not found on this machine",
+    "agentMode.pi-native": "Pi Native",
+    "agentMode.pi-native.detail": "Sofvary Pi runs through the built-in Gateway.",
+    "agentMode.third-party-managed": "Agent managed",
+    "agentMode.third-party-managed.detail": "Use the Agent's ACP or CLI adapter directly.",
+    "agentMode.workspace-handoff": "Workspace handoff",
+    "agentMode.workspace-handoff.detail": "Prepare a bounded workspace for an external Agent.",
   };
   return (fallback[key] ?? key).replace(/\{([a-zA-Z0-9_.-]+)\}/g, (match, name) =>
     params[name] === undefined || params[name] === null ? match : String(params[name]),

@@ -185,6 +185,47 @@ test("maps runtime repair exhausted summaries to runtime warning cards", () => {
   assert.equal(item.hidesTechnicalDetail, true);
 });
 
+test("maps workspace handoff preparation to a progress card", () => {
+  const item = presentBuildThreadEntry(
+    entry({
+      kind: "agent-event",
+      content: "Workspace Handoff prepared. Prompt file is ready.",
+    }),
+  );
+
+  assert.equal(item.kind, "progress");
+  assert.equal(item.tone, "success");
+  assert.equal(item.title, "Workspace Handoff 已准备");
+  assert.equal(item.hidesTechnicalDetail, true);
+});
+
+test("maps workspace handoff generated files to a file card", () => {
+  const item = presentBuildThreadEntry(
+    entry({
+      kind: "agent-event",
+      content: "Workspace Handoff detected 3 generated files.",
+    }),
+  );
+
+  assert.equal(item.kind, "file");
+  assert.equal(item.tone, "success");
+  assert.equal(item.title, "已检测到 3 个生成文件");
+});
+
+test("maps workspace handoff repair prompts to runtime cards", () => {
+  const item = presentBuildThreadEntry(
+    entry({
+      kind: "agent-event",
+      content: "Workspace Handoff repair prompt ready: .sofvary/repair-prompt.md",
+    }),
+  );
+
+  assert.equal(item.kind, "runtime");
+  assert.equal(item.tone, "warning");
+  assert.equal(item.title, "修复提示词已生成");
+  assert.equal(item.hidesTechnicalDetail, true);
+});
+
 test("maps non-agent runtime diagnostic summaries to runtime warning cards", () => {
   const item = presentBuildThreadEntry(
     entry({

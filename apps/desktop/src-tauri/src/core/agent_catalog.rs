@@ -80,6 +80,7 @@ fn discover_template(
             acp,
             cli,
             allow_cli_fallback: template.allow_cli_fallback,
+            default_interaction_mode: None,
             last_test: None,
         },
         detected,

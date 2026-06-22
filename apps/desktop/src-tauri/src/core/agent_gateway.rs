@@ -3688,6 +3688,7 @@ mod tests {
                 source: crate::core::agent_config::AgentInstallSource::ExternalPath,
             }),
             allow_cli_fallback: true,
+            default_interaction_mode: None,
             last_test: None,
         };
 

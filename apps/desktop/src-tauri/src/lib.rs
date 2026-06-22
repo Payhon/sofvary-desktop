@@ -6,7 +6,7 @@ use crate::core::agent_catalog::{discover_agents as discover_agent_catalog, Disc
 use crate::core::agent_cli_bridge::test_cli_agent;
 use crate::core::agent_config::{
     fresh_test_record, AgentCommandConfig, AgentConfig, AgentConfigState, AgentConfigStore,
-    AgentProvider, AgentTestRecord, AgentTransportKind,
+    AgentInteractionMode, AgentProvider, AgentTestRecord, AgentTransportKind,
 };
 use crate::core::agent_gateway::{AgentEvent, AgentEventSink};
 use crate::core::agent_install::{
@@ -47,7 +47,8 @@ use crate::core::file_processor_runtime::{
     FileProcessorDryRunOperation, FileProcessorSelectedFileMetadata,
 };
 use crate::core::gateway_uni_event::{
-    gateway_uni_event_summary, GatewayUniEvent, GatewayUniEventSink, GatewayUniEventType,
+    gateway_uni_event_summary, GatewayUniEvent, GatewayUniEventEmitter, GatewayUniEventSink,
+    GatewayUniEventType,
 };
 use crate::core::llm_provider_config::{
     fresh_llm_test_record, LlmProviderConfig, LlmProviderConfigError, LlmProviderConfigState,
@@ -66,9 +67,10 @@ use crate::core::packager_toolchain::{
 use crate::core::pi_agent::test_pi_agent;
 use crate::core::policy_engine::PolicyEngine;
 use crate::core::policy_types::{
-    PolicyAgentInstallRequest, PolicyApprovalSet, PolicyCapsuleImportRequest, PolicyCommandRequest,
-    PolicyDecision, PolicyExternalAgentProcessRequest, PolicyPackInstallRequest,
-    PolicyRuntimeEnvironmentInstallRequest, PolicyWorkspaceLockfileUpdateRequest,
+    PolicyActionKind, PolicyAgentInstallRequest, PolicyApprovalSet, PolicyCapsuleImportRequest,
+    PolicyCommandRequest, PolicyDecision, PolicyExternalAgentProcessRequest,
+    PolicyPackInstallRequest, PolicyRuntimeEnvironmentInstallRequest,
+    PolicyWorkspaceLockfileUpdateRequest,
 };
 use crate::core::runtime_dependency_install::dependency_install_policy_preview_specs;
 use crate::core::runtime_environment::{
@@ -89,6 +91,14 @@ use crate::core::runtime_selector::{
 use crate::core::skill_registry::{
     InstallRegistrySkillPayload, InstalledSkillSummary, SkillRegistryInstaller,
 };
+use crate::core::workspace_handoff::{
+    append_handoff_request_consumed, prepare_existing_handoff_workspace,
+    prepare_new_handoff_workspace, read_handoff_envelope, read_handoff_prompt,
+    read_handoff_repair_prompt, write_handoff_diagnostics, WorkspaceHandoffPreparation,
+};
+use crate::core::workspace_handoff_watcher::{
+    scan_handoff_workspace, wait_for_handoff_assets, HandoffScanResult,
+};
 use crate::core::workspace_manager::WorkspaceManager;
 use crate::core::workspace_types::{
     AppBoxManifest, RuntimeKind, RuntimeMode, SnapshotSummary, WorkspaceSummary,
@@ -99,7 +109,9 @@ use crate::platform::host_shell::{
     tray_or_menu_bar_available, ShortcutKey, ShortcutModifier, WindowPosition, WindowSize,
     GLYPH_WINDOW,
 };
-use crate::platform::{current_adapter, ArchKind, OsKind, PlatformDirs, WebviewProfile};
+use crate::platform::{
+    current_adapter, ArchKind, CommandSpec, OsKind, PlatformDirs, WebviewProfile,
+};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
@@ -192,6 +204,8 @@ struct StartBuildThreadPayload {
     mode: Option<RuntimeMode>,
     agent_id: Option<String>,
     #[serde(default)]
+    agent_mode: Option<AgentInteractionMode>,
+    #[serde(default)]
     policy_approvals: PolicyApprovalSet,
 }
 
@@ -207,7 +221,31 @@ struct ContinueBuildThreadPayload {
     thread_id: String,
     prompt: String,
     #[serde(default)]
+    agent_mode: Option<AgentInteractionMode>,
+    #[serde(default)]
     policy_approvals: PolicyApprovalSet,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HandoffPromptCopyResult {
+    thread: BuildThreadSummary,
+    prompt: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HandoffActionResult {
+    thread: BuildThreadSummary,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HandoffRescanResult {
+    thread: BuildThreadSummary,
+    scan: HandoffScanResult,
+    #[serde(default)]
+    preview: Option<RuntimePreview>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -497,6 +535,7 @@ fn start_build_thread(
         .map_err(|error| error.to_string())?;
     let agent_config = hydrate_agent_config_for_runtime(agent_config, &state.llm_provider_store)
         .map_err(|error| error.to_string())?;
+    let agent_mode = resolve_agent_interaction_mode(payload.agent_mode, &agent_config);
     let mode = payload.mode.unwrap_or_default();
     let runtime_selection =
         runtime_selection_for_payload(&payload.requirement, payload.runtime_kind);
@@ -509,6 +548,7 @@ fn start_build_thread(
             runtime_kind,
             runtime_mode: mode,
             agent_id: agent_config.id.clone(),
+            agent_mode,
         })
         .map_err(|error| error.to_string())?;
     emit_build_thread_updated(&app, &thread.summary);
@@ -547,6 +587,7 @@ fn start_build_thread(
             mode,
             policy_approvals,
             agent_config,
+            agent_mode,
             BuildThreadRunContext::NewApp,
         );
     });
@@ -610,6 +651,10 @@ fn continue_build_thread(
         .map_err(|error| error.to_string())?;
     let agent_config = hydrate_agent_config_for_runtime(agent_config, &state.llm_provider_store)
         .map_err(|error| error.to_string())?;
+    let agent_mode = resolve_agent_interaction_mode(
+        payload.agent_mode.or(Some(detail.summary.agent_mode)),
+        &agent_config,
+    );
     let entry = state
         .build_thread_store
         .append_entry(
@@ -650,6 +695,7 @@ fn continue_build_thread(
             runtime_mode,
             payload.policy_approvals,
             agent_config,
+            agent_mode,
             BuildThreadRunContext::ExistingApp {
                 app_id: continuation_app_id,
             },
@@ -691,6 +737,184 @@ fn cancel_build_thread(
     Ok(summary)
 }
 
+#[tauri::command]
+fn copy_handoff_prompt(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    thread_id: String,
+) -> Result<HandoffPromptCopyResult, String> {
+    let (thread, manifest) = handoff_thread_manifest(&state, &thread_id)?;
+    let prompt = read_handoff_prompt(&manifest).map_err(|error| error.to_string())?;
+    if let Ok(entry) = state.build_thread_store.append_entry(
+        &thread_id,
+        BuildThreadEntryKind::System,
+        "Workspace Handoff prompt copied.",
+        serde_json::json!({ "kind": "workspace-handoff-prompt-copied" }),
+    ) {
+        emit_build_thread_entry(&app, &entry);
+    }
+    Ok(HandoffPromptCopyResult { thread, prompt })
+}
+
+#[tauri::command]
+fn copy_handoff_repair_prompt(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    thread_id: String,
+) -> Result<HandoffPromptCopyResult, String> {
+    let (thread, manifest) = handoff_thread_manifest(&state, &thread_id)?;
+    let prompt = read_handoff_repair_prompt(&manifest).map_err(|error| error.to_string())?;
+    if let Ok(entry) = state.build_thread_store.append_entry(
+        &thread_id,
+        BuildThreadEntryKind::System,
+        "Workspace Handoff repair prompt copied.",
+        serde_json::json!({ "kind": "workspace-handoff-repair-prompt-copied" }),
+    ) {
+        emit_build_thread_entry(&app, &entry);
+    }
+    Ok(HandoffPromptCopyResult { thread, prompt })
+}
+
+#[tauri::command]
+fn open_handoff_workspace(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    thread_id: String,
+) -> Result<HandoffActionResult, String> {
+    let (thread, manifest) = handoff_thread_manifest(&state, &thread_id)?;
+    current_adapter()
+        .reveal_path(&manifest.paths.root)
+        .map_err(|error| error.to_string())?;
+    if let Ok(entry) = state.build_thread_store.append_entry(
+        &thread_id,
+        BuildThreadEntryKind::System,
+        "Workspace Handoff folder opened.",
+        serde_json::json!({
+            "kind": "workspace-handoff-workspace-opened",
+            "workspaceRoot": manifest.paths.root,
+        }),
+    ) {
+        emit_build_thread_entry(&app, &entry);
+    }
+    Ok(HandoffActionResult { thread })
+}
+
+#[tauri::command]
+fn open_handoff_agent(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    thread_id: String,
+    policy_approvals: Option<PolicyApprovalSet>,
+) -> Result<HandoffActionResult, String> {
+    let (thread, manifest) = handoff_thread_manifest(&state, &thread_id)?;
+    let agent = state
+        .agent_store
+        .resolve_agent(Some(&thread.agent_id))
+        .map_err(|error| error.to_string())?;
+    let (transport, command) = if let Some(acp) = agent.acp.clone() {
+        ("acp", acp)
+    } else if agent.provider == AgentProvider::SofvaryPi {
+        let command = agent
+            .cli
+            .clone()
+            .ok_or_else(|| "selected Agent has no launch command".to_string())?;
+        ("pi-rpc", command)
+    } else if agent.allow_cli_fallback
+        && agent
+            .last_test
+            .as_ref()
+            .is_some_and(|record| record.ok && matches!(record.transport, AgentTransportKind::Cli))
+    {
+        let command = agent
+            .cli
+            .clone()
+            .ok_or_else(|| "selected Agent has no launch command".to_string())?;
+        ("cli", command)
+    } else {
+        return Err("selected Agent has no policy-approved launch command".to_string());
+    };
+    let subject = format!(
+        "{}:{}:{}",
+        agent.id,
+        transport,
+        command.executable.display()
+    );
+    if !policy_approvals
+        .unwrap_or_default()
+        .permits(PolicyActionKind::ExternalAgentProcess, Some(&subject))
+    {
+        return Err("Policy approval required to open the Workspace Handoff Agent.".to_string());
+    }
+    current_adapter()
+        .spawn_process(CommandSpec {
+            executable: command.executable.clone(),
+            args: command.args.clone(),
+            cwd: manifest.paths.root.clone(),
+            env: command.env.clone(),
+            allowed_network: false,
+            timeout_ms: None,
+            kill_on_drop: false,
+        })
+        .map_err(|error| error.to_string())?;
+    if let Ok(entry) = state.build_thread_store.append_entry(
+        &thread_id,
+        BuildThreadEntryKind::System,
+        format!("Workspace Handoff Agent launched: {}", agent.label),
+        serde_json::json!({
+            "kind": "workspace-handoff-agent-opened",
+            "agentId": agent.id,
+            "transport": transport,
+            "workspaceRoot": manifest.paths.root,
+        }),
+    ) {
+        emit_build_thread_entry(&app, &entry);
+    }
+    Ok(HandoffActionResult { thread })
+}
+
+#[tauri::command]
+fn rescan_handoff_workspace(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    thread_id: String,
+) -> Result<HandoffRescanResult, String> {
+    let (thread, manifest) = handoff_thread_manifest(&state, &thread_id)?;
+    let envelope = read_handoff_envelope(&manifest).map_err(|error| error.to_string())?;
+    let scan = scan_handoff_workspace(&manifest, &envelope).map_err(|error| error.to_string())?;
+    append_handoff_request_consumed(&manifest, "validate.json")
+        .map_err(|error| error.to_string())?;
+    append_handoff_request_consumed(&manifest, "preview.json")
+        .map_err(|error| error.to_string())?;
+    append_handoff_scan_entries(&app, &state.build_thread_store, &thread_id, &scan);
+
+    let preview = if scan.complete {
+        preview_handoff_workspace(
+            &app,
+            &state.build_thread_store,
+            state.runtime_manager.clone(),
+            state.workspace_manager,
+            &thread_id,
+            thread.runtime_mode,
+            PolicyApprovalSet::default(),
+            &manifest,
+            &envelope,
+        )
+        .ok()
+    } else {
+        None
+    };
+    let thread = state
+        .build_thread_store
+        .get(&thread_id)
+        .map_err(|error| error.to_string())?
+        .summary;
+    Ok(HandoffRescanResult {
+        thread,
+        scan,
+        preview,
+    })
+}
+
 enum BuildThreadRunContext {
     NewApp,
     ExistingApp { app_id: String },
@@ -707,10 +931,28 @@ fn run_build_thread_task(
     runtime_mode: RuntimeMode,
     policy_approvals: PolicyApprovalSet,
     agent_config: AgentConfig,
+    agent_mode: AgentInteractionMode,
     run_context: BuildThreadRunContext,
 ) {
     if build_thread_is_canceled(&build_thread_store, &thread_id) {
         emit_build_thread_canceled_state(&app);
+        return;
+    }
+
+    if agent_mode == AgentInteractionMode::WorkspaceHandoff {
+        run_workspace_handoff_build_thread_task(
+            app,
+            build_thread_store,
+            runtime_manager,
+            workspace_manager,
+            thread_id,
+            requirement,
+            runtime_kind,
+            runtime_mode,
+            policy_approvals,
+            agent_config,
+            run_context,
+        );
         return;
     }
 
@@ -922,6 +1164,346 @@ fn build_thread_failure_summary(error: &RuntimeManagerError) -> (String, serde_j
     }
 }
 
+fn run_workspace_handoff_build_thread_task(
+    app: tauri::AppHandle,
+    build_thread_store: BuildThreadStore,
+    runtime_manager: Arc<RuntimeManager>,
+    workspace_manager: WorkspaceManager,
+    thread_id: String,
+    requirement: String,
+    runtime_kind: RuntimeKind,
+    runtime_mode: RuntimeMode,
+    policy_approvals: PolicyApprovalSet,
+    agent_config: AgentConfig,
+    run_context: BuildThreadRunContext,
+) {
+    let emitter = handoff_event_emitter(&app, build_thread_store, &thread_id, &agent_config.id);
+    emitter.session_started(&agent_config.label);
+    emitter.status("workspace-preparing", "Preparing Workspace Handoff files.");
+
+    if let Some(summary) = update_build_thread_unless_canceled(
+        &app,
+        &build_thread_store,
+        &thread_id,
+        BuildThreadUpdate {
+            status: Some(BuildThreadStatus::Planning),
+            error: Some(None),
+            ..BuildThreadUpdate::default()
+        },
+    ) {
+        emit_build_thread_updated(&app, &summary);
+    }
+    let _ = app.emit("sofvary-build-state", "Planning");
+
+    let preparation = match run_context {
+        BuildThreadRunContext::NewApp => prepare_new_handoff_workspace(
+            &requirement,
+            runtime_kind,
+            &workspace_manager,
+            &agent_config,
+        ),
+        BuildThreadRunContext::ExistingApp { app_id } => workspace_manager
+            .get_workspace(app_id)
+            .map_err(Into::into)
+            .and_then(|manifest| {
+                prepare_existing_handoff_workspace(
+                    &requirement,
+                    manifest,
+                    &workspace_manager,
+                    &agent_config,
+                )
+            }),
+    };
+
+    let preparation = match preparation {
+        Ok(preparation) => preparation,
+        Err(error) => {
+            fail_build_thread(
+                &app,
+                &build_thread_store,
+                &thread_id,
+                format!("Workspace Handoff preparation failed: {error}"),
+                serde_json::json!({ "kind": "workspace-handoff-prepare-failed" }),
+            );
+            emitter.error(error.to_string());
+            emitter.turn_completed("error");
+            return;
+        }
+    };
+
+    append_handoff_prepared_entry(&app, &build_thread_store, &thread_id, &preparation);
+    let summary = build_thread_store.update(
+        &thread_id,
+        BuildThreadUpdate {
+            status: Some(BuildThreadStatus::Building),
+            workspace_id: Some(Some(preparation.manifest.app_id.clone())),
+            app_id: Some(Some(preparation.manifest.app_id.clone())),
+            error: Some(None),
+            ..BuildThreadUpdate::default()
+        },
+    );
+    if let Ok(summary) = summary {
+        emit_build_thread_updated(&app, &summary);
+    }
+    let _ = app.emit("sofvary-build-state", "Building");
+    emitter.status(
+        "handoff-ready",
+        "Workspace is ready. Paste SOFVARY_AGENT_PROMPT.md into the selected external Agent.",
+    );
+
+    let scan = wait_for_handoff_assets(
+        &preparation.manifest,
+        &preparation.prompt_envelope,
+        Duration::from_secs(300),
+        Duration::from_secs(2),
+    );
+    let scan = match scan {
+        Ok(scan) => scan,
+        Err(error) => {
+            fail_build_thread(
+                &app,
+                &build_thread_store,
+                &thread_id,
+                format!("Workspace Handoff scan failed: {error}"),
+                serde_json::json!({ "kind": "workspace-handoff-scan-failed" }),
+            );
+            emitter.error(error.to_string());
+            emitter.turn_completed("error");
+            return;
+        }
+    };
+
+    append_handoff_scan_entries(&app, &build_thread_store, &thread_id, &scan);
+    if !scan.complete {
+        emitter.status(
+            "waiting-for-files",
+            format!(
+                "Waiting for external Agent output. Missing {} files.",
+                scan.missing_files.len()
+            ),
+        );
+        return;
+    }
+
+    let _ = preview_handoff_workspace(
+        &app,
+        &build_thread_store,
+        runtime_manager,
+        workspace_manager,
+        &thread_id,
+        runtime_mode,
+        policy_approvals,
+        &preparation.manifest,
+        &preparation.prompt_envelope,
+    );
+    emitter.turn_completed("ok");
+}
+
+fn handoff_event_emitter(
+    app: &tauri::AppHandle,
+    build_thread_store: BuildThreadStore,
+    thread_id: &str,
+    agent_id: &str,
+) -> GatewayUniEventEmitter {
+    let app = app.clone();
+    let thread_id_for_sink = thread_id.to_string();
+    let sink: GatewayUniEventSink = Arc::new(move |event| {
+        if build_thread_is_canceled(&build_thread_store, &thread_id_for_sink) {
+            return;
+        }
+        append_gateway_uni_event(&app, &build_thread_store, &thread_id_for_sink, event);
+    });
+    GatewayUniEventEmitter::new(
+        thread_id.to_string(),
+        agent_id.to_string(),
+        AgentTransportKind::WorkspaceHandoff,
+        sink,
+    )
+}
+
+fn append_handoff_prepared_entry(
+    app: &tauri::AppHandle,
+    build_thread_store: &BuildThreadStore,
+    thread_id: &str,
+    preparation: &WorkspaceHandoffPreparation,
+) {
+    if let Ok(entry) = build_thread_store.append_entry(
+        thread_id,
+        BuildThreadEntryKind::System,
+        "Workspace Handoff prepared. Prompt file is ready.",
+        serde_json::json!({
+            "kind": "workspace-handoff-prepared",
+            "appId": preparation.manifest.app_id,
+            "workspaceRoot": preparation.manifest.paths.root,
+            "promptPath": preparation.prompt_path,
+            "promptEnvelopeSummary": preparation.prompt_envelope_summary,
+        }),
+    ) {
+        emit_build_thread_entry(app, &entry);
+    }
+}
+
+fn append_handoff_scan_entries(
+    app: &tauri::AppHandle,
+    build_thread_store: &BuildThreadStore,
+    thread_id: &str,
+    scan: &HandoffScanResult,
+) {
+    for status in &scan.status_entries {
+        if let Ok(entry) = build_thread_store.append_entry(
+            thread_id,
+            BuildThreadEntryKind::AgentEvent,
+            format!("Workspace Handoff Agent status: {status}"),
+            serde_json::json!({ "kind": "workspace-handoff-agent-status" }),
+        ) {
+            emit_build_thread_entry(app, &entry);
+        }
+    }
+
+    let existing_files = scan
+        .files
+        .iter()
+        .filter(|file| file.exists)
+        .map(|file| file.relative_path.clone())
+        .collect::<Vec<_>>();
+    if !existing_files.is_empty() {
+        if let Ok(entry) = build_thread_store.append_entry(
+            thread_id,
+            BuildThreadEntryKind::File,
+            format!(
+                "Workspace Handoff detected {} generated files.",
+                existing_files.len()
+            ),
+            serde_json::json!({
+                "kind": "workspace-handoff-files-changed",
+                "generatedRoot": scan.generated_root,
+                "files": existing_files,
+                "missingFiles": scan.missing_files,
+                "validateRequested": scan.validate_requested,
+                "previewRequested": scan.preview_requested,
+            }),
+        ) {
+            emit_build_thread_entry(app, &entry);
+        }
+    } else if let Ok(entry) = build_thread_store.append_entry(
+        thread_id,
+        BuildThreadEntryKind::System,
+        "Workspace Handoff is waiting for generated files.",
+        serde_json::json!({
+            "kind": "workspace-handoff-waiting",
+            "missingFiles": scan.missing_files,
+        }),
+    ) {
+        emit_build_thread_entry(app, &entry);
+    }
+}
+
+fn preview_handoff_workspace(
+    app: &tauri::AppHandle,
+    build_thread_store: &BuildThreadStore,
+    runtime_manager: Arc<RuntimeManager>,
+    workspace_manager: WorkspaceManager,
+    thread_id: &str,
+    runtime_mode: RuntimeMode,
+    policy_approvals: PolicyApprovalSet,
+    manifest: &AppBoxManifest,
+    envelope: &crate::core::harness_engine::PromptEnvelope,
+) -> Result<RuntimePreview, RuntimeManagerError> {
+    if let Ok(entry) = build_thread_store.append_entry(
+        thread_id,
+        BuildThreadEntryKind::System,
+        "Workspace Handoff contract is complete. Starting preview.",
+        serde_json::json!({ "kind": "workspace-handoff-preview-starting" }),
+    ) {
+        emit_build_thread_entry(app, &entry);
+    }
+    if let Ok(summary) = build_thread_store.update(
+        thread_id,
+        BuildThreadUpdate {
+            status: Some(BuildThreadStatus::Previewing),
+            ..BuildThreadUpdate::default()
+        },
+    ) {
+        emit_build_thread_updated(app, &summary);
+    }
+
+    match runtime_manager.preview_existing_workspace_with_policy(
+        manifest.app_id.clone(),
+        runtime_mode,
+        &workspace_manager,
+        &policy_approvals,
+    ) {
+        Ok(preview) => {
+            append_preview_logs(app, build_thread_store, thread_id, &preview);
+            let summary = build_thread_store.update(
+                thread_id,
+                BuildThreadUpdate {
+                    status: Some(BuildThreadStatus::Completed),
+                    workspace_id: Some(Some(preview.app_id.clone())),
+                    app_id: Some(Some(preview.app_id.clone())),
+                    preview: Some(Some(preview.clone())),
+                    preview_issue: Some(None),
+                    error: Some(None),
+                },
+            );
+            if let Ok(summary) = summary {
+                emit_build_thread_updated(app, &summary);
+            }
+            let _ = app.emit("sofvary-runtime-preview", preview.clone());
+            Ok(preview)
+        }
+        Err(error) => {
+            if let RuntimeManagerError::RuntimeDiagnosticBlocked {
+                diagnostic,
+                source_detail,
+                ..
+            }
+            | RuntimeManagerError::RuntimeRepairExhausted {
+                diagnostic,
+                summary: source_detail,
+                ..
+            } = &error
+            {
+                let _ = write_handoff_diagnostics(manifest, envelope, diagnostic, source_detail);
+            }
+            if mark_build_thread_preview_blocked(app, build_thread_store, thread_id, &error) {
+                return Err(error);
+            }
+            let (message, metadata) = build_thread_failure_summary(&error);
+            fail_build_thread(app, build_thread_store, thread_id, message, metadata);
+            Err(error)
+        }
+    }
+}
+
+fn fail_build_thread(
+    app: &tauri::AppHandle,
+    build_thread_store: &BuildThreadStore,
+    thread_id: &str,
+    message: String,
+    metadata: serde_json::Value,
+) {
+    if let Ok(entry) = build_thread_store.append_entry(
+        thread_id,
+        BuildThreadEntryKind::Error,
+        message.clone(),
+        metadata,
+    ) {
+        emit_build_thread_entry(app, &entry);
+    }
+    if let Ok(summary) = build_thread_store.update(
+        thread_id,
+        BuildThreadUpdate {
+            status: Some(BuildThreadStatus::Failed),
+            error: Some(Some(message.clone())),
+            ..BuildThreadUpdate::default()
+        },
+    ) {
+        emit_build_thread_updated(app, &summary);
+    }
+    let _ = app.emit("sofvary-runtime-error", message);
+}
+
 fn mark_build_thread_preview_blocked(
     app: &tauri::AppHandle,
     build_thread_store: &BuildThreadStore,
@@ -1006,6 +1588,45 @@ fn build_thread_is_canceled(build_thread_store: &BuildThreadStore, thread_id: &s
         .get(thread_id)
         .map(|detail| detail.summary.status == BuildThreadStatus::Canceled)
         .unwrap_or(false)
+}
+
+fn resolve_agent_interaction_mode(
+    requested: Option<AgentInteractionMode>,
+    agent_config: &AgentConfig,
+) -> AgentInteractionMode {
+    let mode = requested.unwrap_or_else(|| agent_config.effective_interaction_mode());
+    match (agent_config.provider, mode) {
+        (AgentProvider::SofvaryPi, AgentInteractionMode::ThirdPartyManaged)
+        | (AgentProvider::SofvaryPi, AgentInteractionMode::WorkspaceHandoff) => {
+            AgentInteractionMode::PiNative
+        }
+        (_, AgentInteractionMode::PiNative) => AgentInteractionMode::ThirdPartyManaged,
+        _ => mode,
+    }
+}
+
+fn handoff_thread_manifest(
+    state: &tauri::State<'_, AppState>,
+    thread_id: &str,
+) -> Result<(BuildThreadSummary, AppBoxManifest), String> {
+    let thread = state
+        .build_thread_store
+        .get(thread_id)
+        .map_err(|error| error.to_string())?
+        .summary;
+    if thread.agent_mode != AgentInteractionMode::WorkspaceHandoff {
+        return Err("build thread is not a Workspace Handoff thread".to_string());
+    }
+    let app_id = thread
+        .app_id
+        .clone()
+        .or_else(|| thread.workspace_id.clone())
+        .ok_or_else(|| "Workspace Handoff thread has no workspace id".to_string())?;
+    let manifest = state
+        .workspace_manager
+        .get_workspace(app_id)
+        .map_err(|error| error.to_string())?;
+    Ok((thread, manifest))
 }
 
 fn append_live_agent_event(
@@ -2326,6 +2947,11 @@ pub fn run() {
             delete_build_thread,
             continue_build_thread,
             cancel_build_thread,
+            copy_handoff_prompt,
+            open_handoff_workspace,
+            open_handoff_agent,
+            rescan_handoff_workspace,
+            copy_handoff_repair_prompt,
             discover_agents,
             list_agent_configs,
             upsert_agent_config,

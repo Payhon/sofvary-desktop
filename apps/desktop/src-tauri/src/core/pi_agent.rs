@@ -70,6 +70,23 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
         events.session_started("Sofvary Pi");
         events.turn_started(prompt_id.clone());
         events.status("connecting", "Starting Sofvary Pi RPC harness");
+        if !request.diagnostics.is_empty() {
+            events.status(
+                "repair-context",
+                format!(
+                    "Passing {} runtime diagnostics to Sofvary Pi for repair.",
+                    request.diagnostics.len()
+                ),
+            );
+        }
+        events.emit(
+            GatewayUniEventType::ToolStarted,
+            json!({
+                "toolName": "pi.prompt",
+                "status": "running",
+                "summary": "Sending constrained PromptEnvelope to Sofvary Pi"
+            }),
+        );
     }
     let line = serde_json::to_string(&json!({
         "id": prompt_id,
@@ -81,6 +98,24 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
     process
         .write_line(&line)
         .map_err(|error| AgentGatewayError::Adapter(format!("Pi RPC write failed: {error}")))?;
+    if let Some(events) = &request.gateway_events {
+        events.emit(
+            GatewayUniEventType::ToolCompleted,
+            json!({
+                "toolName": "pi.prompt",
+                "status": "ok",
+                "summary": "PromptEnvelope delivered"
+            }),
+        );
+        events.emit(
+            GatewayUniEventType::ToolStarted,
+            json!({
+                "toolName": "workspace.collect_staged_files",
+                "status": "pending",
+                "summary": "Waiting for generated files in the bounded staging directory"
+            }),
+        );
+    }
 
     let mut text = String::new();
     let mut final_text = String::new();
@@ -194,7 +229,19 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
         },
     );
     if let Some(gateway_events) = &request.gateway_events {
+        gateway_events.emit(
+            GatewayUniEventType::ToolCompleted,
+            json!({
+                "toolName": "workspace.collect_staged_files",
+                "status": "ok",
+                "fileCount": file_writes.len()
+            }),
+        );
         for file in &file_writes {
+            gateway_events.emit(
+                GatewayUniEventType::FileWriteRequested,
+                json!({ "path": &file.relative_path, "source": "pi-rpc" }),
+            );
             gateway_events.emit(
                 GatewayUniEventType::FileWritten,
                 json!({ "path": &file.relative_path, "source": "pi-rpc" }),

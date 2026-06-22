@@ -31,6 +31,7 @@ const baseThread: BuildThreadSummary = {
   runtimeKind: "static-html",
   runtimeMode: "dev",
   agentId: "sofvary-pi",
+  agentMode: "pi-native",
   createdAt: "2026-06-10T08:00:00Z",
   updatedAt: "2026-06-10T08:00:00Z",
   workspaceId: null,

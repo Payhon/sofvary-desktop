@@ -1,3 +1,4 @@
+use crate::core::agent_config::AgentInteractionMode;
 use crate::core::runtime_manager::{RuntimePreview, RuntimePreviewIssue};
 use crate::core::workspace_types::{RuntimeKind, RuntimeMode};
 use crate::platform::{current_adapter, PlatformAdapter, PlatformError};
@@ -64,6 +65,8 @@ pub struct BuildThreadSummary {
     pub runtime_kind: RuntimeKind,
     pub runtime_mode: RuntimeMode,
     pub agent_id: String,
+    #[serde(default)]
+    pub agent_mode: AgentInteractionMode,
     pub created_at: String,
     pub updated_at: String,
     #[serde(default)]
@@ -101,6 +104,7 @@ pub struct CreateBuildThreadRequest {
     pub runtime_kind: RuntimeKind,
     pub runtime_mode: RuntimeMode,
     pub agent_id: String,
+    pub agent_mode: AgentInteractionMode,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -145,6 +149,7 @@ impl BuildThreadStore {
             runtime_kind: request.runtime_kind,
             runtime_mode: request.runtime_mode,
             agent_id: request.agent_id,
+            agent_mode: request.agent_mode,
             created_at: now.clone(),
             updated_at: now.clone(),
             preview: None,
@@ -433,6 +438,7 @@ mod tests {
                     runtime_kind: RuntimeKind::StaticHtml,
                     runtime_mode: RuntimeMode::Dev,
                     agent_id: "agent".to_string(),
+                    agent_mode: AgentInteractionMode::PiNative,
                 },
             )
             .expect("target");
@@ -450,6 +456,7 @@ mod tests {
                     runtime_kind: RuntimeKind::StaticHtml,
                     runtime_mode: RuntimeMode::Dev,
                     agent_id: "agent".to_string(),
+                    agent_mode: AgentInteractionMode::PiNative,
                 },
             )
             .expect("other");
@@ -481,6 +488,7 @@ mod tests {
                     runtime_kind: RuntimeKind::StaticHtml,
                     runtime_mode: RuntimeMode::Dev,
                     agent_id: "agent".to_string(),
+                    agent_mode: AgentInteractionMode::PiNative,
                 },
             )
             .expect("target");
@@ -493,6 +501,7 @@ mod tests {
                     runtime_kind: RuntimeKind::StaticHtml,
                     runtime_mode: RuntimeMode::Dev,
                     agent_id: "agent".to_string(),
+                    agent_mode: AgentInteractionMode::PiNative,
                 },
             )
             .expect("other");
@@ -526,6 +535,7 @@ mod tests {
                     runtime_kind: RuntimeKind::StaticHtml,
                     runtime_mode: RuntimeMode::Dev,
                     agent_id: "agent".to_string(),
+                    agent_mode: AgentInteractionMode::PiNative,
                 },
             )
             .expect("target");

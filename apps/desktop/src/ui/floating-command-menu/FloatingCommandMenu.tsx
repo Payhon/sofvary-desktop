@@ -5,10 +5,12 @@ import {
   AlertTriangle,
   Bot,
   Boxes,
+  Copy,
   Download,
   Eye,
   FileText,
   FileStack,
+  FolderOpen,
   ListTodo,
   LoaderCircle,
   MessageSquare,
@@ -17,6 +19,7 @@ import {
   PanelLeftOpen,
   Plus,
   PackageCheck,
+  RefreshCw,
   Settings,
   ShieldCheck,
   Store,
@@ -28,6 +31,7 @@ import {
 import type {
   AgentConfig,
   AgentConfigState,
+  AgentInteractionMode,
   AgentInstallStatus,
   BuildThreadDetail,
   BuildThreadSummary,
@@ -50,6 +54,8 @@ import type {
 } from "../../types";
 import {
   discoverableAgentsToAdd,
+  formatAgentInteractionMode,
+  formatAgentInteractionModeDetail,
   formatDiscoveredAgentStatus,
   getAgentStatusLine,
   sortAgents,
@@ -292,6 +298,8 @@ interface FloatingCommandMenuProps {
   runtimeEnvironmentStatusLine: string | null;
   selectableAgents: AgentConfig[];
   selectedAgentId: string | null;
+  selectedAgentMode: AgentInteractionMode;
+  availableAgentModes: AgentInteractionMode[];
   agentStatusLine: string;
   buildThreads: BuildThreadSummary[];
   activeThread: BuildThreadSummary | null;
@@ -324,12 +332,18 @@ interface FloatingCommandMenuProps {
   onAction: (action: NavigationKey) => void;
   onRuntimeChoiceChange: (runtimeChoice: RuntimeChoice) => void;
   onAgentChange: (agentId: string) => void;
+  onAgentModeChange: (mode: AgentInteractionMode) => void;
   onSelectBuildThread: (threadId: string) => void;
   onStartNewBuildThreadDraft: () => void;
   onContinueBuildThread: () => void;
   onCancelBuildThread: () => void;
   onDeleteBuildThread: (threadId: string) => void;
   onRepairPreviewBlockedThread: (thread: BuildThreadSummary) => void;
+  onCopyHandoffPrompt: () => void;
+  onOpenHandoffWorkspace: () => void;
+  onOpenHandoffAgent: () => void;
+  onRescanHandoffWorkspace: () => void;
+  onCopyHandoffRepairPrompt: () => void;
   onAddDiscoveredAgent: (agent: DiscoveredAgent) => void;
   onToggleAgentEnabled: (agent: AgentConfig) => void;
   onSetDefaultAgent: (agentId: string) => void;
@@ -389,6 +403,8 @@ export function FloatingCommandMenu({
   runtimeEnvironmentStatusLine,
   selectableAgents,
   selectedAgentId,
+  selectedAgentMode,
+  availableAgentModes,
   agentStatusLine,
   buildThreads,
   activeThread,
@@ -421,12 +437,18 @@ export function FloatingCommandMenu({
   onAction,
   onRuntimeChoiceChange,
   onAgentChange,
+  onAgentModeChange,
   onSelectBuildThread,
   onStartNewBuildThreadDraft,
   onContinueBuildThread,
   onCancelBuildThread,
   onDeleteBuildThread,
   onRepairPreviewBlockedThread,
+  onCopyHandoffPrompt,
+  onOpenHandoffWorkspace,
+  onOpenHandoffAgent,
+  onRescanHandoffWorkspace,
+  onCopyHandoffRepairPrompt,
   onAddDiscoveredAgent,
   onToggleAgentEnabled,
   onSetDefaultAgent,
@@ -521,6 +543,8 @@ export function FloatingCommandMenu({
             selectedAgentLabel={selectedAgent?.label ?? t("menu.unconfigured")}
             selectableAgents={selectableAgents}
             selectedAgentId={selectedAgentId}
+            selectedAgentMode={selectedAgentMode}
+            availableAgentModes={availableAgentModes}
             agentStatusLine={agentStatusLine}
             visibleRuntimes={visibleRuntimes}
             threads={buildThreads}
@@ -536,12 +560,18 @@ export function FloatingCommandMenu({
             onCloseTaskRail={() => setTaskRailOpen(false)}
             onRuntimeChoiceChange={onRuntimeChoiceChange}
             onAgentChange={onAgentChange}
+            onAgentModeChange={onAgentModeChange}
             onSelect={onSelectBuildThread}
             onStartNew={onStartNewBuildThreadDraft}
             onContinue={onContinueBuildThread}
             onCancel={onCancelBuildThread}
             onDelete={onDeleteBuildThread}
             onRepairPreviewBlockedThread={onRepairPreviewBlockedThread}
+            onCopyHandoffPrompt={onCopyHandoffPrompt}
+            onOpenHandoffWorkspace={onOpenHandoffWorkspace}
+            onOpenHandoffAgent={onOpenHandoffAgent}
+            onRescanHandoffWorkspace={onRescanHandoffWorkspace}
+            onCopyHandoffRepairPrompt={onCopyHandoffRepairPrompt}
           />
         ) : null}
 
@@ -1177,6 +1207,8 @@ interface CreateTaskSurfaceProps {
   selectedAgentLabel: string;
   selectableAgents: AgentConfig[];
   selectedAgentId: string | null;
+  selectedAgentMode: AgentInteractionMode;
+  availableAgentModes: AgentInteractionMode[];
   agentStatusLine: string;
   visibleRuntimes: RuntimeOption[];
   threads: BuildThreadSummary[];
@@ -1192,12 +1224,18 @@ interface CreateTaskSurfaceProps {
   onCloseTaskRail: () => void;
   onRuntimeChoiceChange: (runtimeChoice: RuntimeChoice) => void;
   onAgentChange: (agentId: string) => void;
+  onAgentModeChange: (mode: AgentInteractionMode) => void;
   onSelect: (threadId: string) => void;
   onStartNew: () => void;
   onContinue: () => void;
   onCancel: () => void;
   onDelete: (threadId: string) => void;
   onRepairPreviewBlockedThread: (thread: BuildThreadSummary) => void;
+  onCopyHandoffPrompt: () => void;
+  onOpenHandoffWorkspace: () => void;
+  onOpenHandoffAgent: () => void;
+  onRescanHandoffWorkspace: () => void;
+  onCopyHandoffRepairPrompt: () => void;
 }
 
 function CreateTaskSurface({
@@ -1215,6 +1253,8 @@ function CreateTaskSurface({
   selectedAgentLabel,
   selectableAgents,
   selectedAgentId,
+  selectedAgentMode,
+  availableAgentModes,
   agentStatusLine,
   visibleRuntimes,
   threads,
@@ -1230,12 +1270,18 @@ function CreateTaskSurface({
   onCloseTaskRail,
   onRuntimeChoiceChange,
   onAgentChange,
+  onAgentModeChange,
   onSelect,
   onStartNew,
   onContinue,
   onCancel,
   onDelete,
   onRepairPreviewBlockedThread,
+  onCopyHandoffPrompt,
+  onOpenHandoffWorkspace,
+  onOpenHandoffAgent,
+  onRescanHandoffWorkspace,
+  onCopyHandoffRepairPrompt,
 }: CreateTaskSurfaceProps) {
   const { t } = useDesktopLocale();
   const isContinuingTask = activeThread !== null;
@@ -1245,7 +1291,7 @@ function CreateTaskSurface({
   const didAutoOpenHistoryRailRef = useRef(false);
   const composerValue = isContinuingTask ? continuePrompt : createPrompt;
   const onComposerChange = isContinuingTask ? onContinuePromptChange : onCreatePromptChange;
-  const [openComposerMenu, setOpenComposerMenu] = useState<"agent" | "runtime" | null>(null);
+  const [openComposerMenu, setOpenComposerMenu] = useState<"agent" | "agent-mode" | "runtime" | null>(null);
   const composerPickerRootRef = useRef<HTMLDivElement | null>(null);
   const selectedRuntime =
     visibleRuntimes.find((option) => option.kind === runtimeChoice) ?? visibleRuntimes[0];
@@ -1262,14 +1308,18 @@ function CreateTaskSurface({
     ? (selectableAgents.find((agent) => agent.id === activeThread.agentId)?.label ??
       activeThread.agentId)
     : selectedAgentLabel;
+  const activeAgentModeLabel = activeThread
+    ? formatAgentInteractionMode(activeThread.agentMode, t)
+    : formatAgentInteractionMode(selectedAgentMode, t);
   const composerStatusItems = useMemo(
     () => [
       { icon: "▦", label: t("stats.workspaces"), value: String(workspaceCount) },
       { icon: "⚡", label: t("stats.currentRuntime"), value: activeRuntimeLabel },
       { icon: "◌", label: t("stats.security"), value: securityState },
       { icon: "AI", label: t("stats.currentAgent"), value: activeAgentLabel },
+      { icon: "↔", label: t("stats.currentAgentMode", {}, "Agent mode"), value: activeAgentModeLabel },
     ],
-    [activeAgentLabel, activeRuntimeLabel, securityState, t, workspaceCount],
+    [activeAgentLabel, activeAgentModeLabel, activeRuntimeLabel, securityState, t, workspaceCount],
   );
 
   useEffect(() => {
@@ -1390,6 +1440,11 @@ function CreateTaskSurface({
                   isBusy={isBusy}
                   onCancel={onCancel}
                   onRepairPreviewBlockedThread={onRepairPreviewBlockedThread}
+                  onCopyHandoffPrompt={onCopyHandoffPrompt}
+                  onOpenHandoffWorkspace={onOpenHandoffWorkspace}
+                  onOpenHandoffAgent={onOpenHandoffAgent}
+                  onRescanHandoffWorkspace={onRescanHandoffWorkspace}
+                  onCopyHandoffRepairPrompt={onCopyHandoffRepairPrompt}
                 />
               </div>
 
@@ -1438,6 +1493,22 @@ function CreateTaskSurface({
                       }
                       onChange={(agentId) => {
                         onAgentChange(agentId);
+                        setOpenComposerMenu(null);
+                      }}
+                    />
+
+                    <AgentModeSelectorPanel
+                      modes={availableAgentModes}
+                      selectedMode={selectedAgentMode}
+                      disabled={isBusy || availableAgentModes.length <= 1}
+                      isOpen={openComposerMenu === "agent-mode"}
+                      onToggle={() =>
+                        setOpenComposerMenu((current) =>
+                          current === "agent-mode" ? null : "agent-mode",
+                        )
+                      }
+                      onChange={(mode) => {
+                        onAgentModeChange(mode);
                         setOpenComposerMenu(null);
                       }}
                     />
@@ -1595,6 +1666,11 @@ interface TaskConversationPanelProps {
   isBusy: boolean;
   onCancel: () => void;
   onRepairPreviewBlockedThread: (thread: BuildThreadSummary) => void;
+  onCopyHandoffPrompt: () => void;
+  onOpenHandoffWorkspace: () => void;
+  onOpenHandoffAgent: () => void;
+  onRescanHandoffWorkspace: () => void;
+  onCopyHandoffRepairPrompt: () => void;
 }
 
 function TaskConversationPanel({
@@ -1603,6 +1679,11 @@ function TaskConversationPanel({
   isBusy,
   onCancel,
   onRepairPreviewBlockedThread,
+  onCopyHandoffPrompt,
+  onOpenHandoffWorkspace,
+  onOpenHandoffAgent,
+  onRescanHandoffWorkspace,
+  onCopyHandoffRepairPrompt,
 }: TaskConversationPanelProps) {
   const { t } = useDesktopLocale();
   const entries = useMemo(() => visibleThreadEntries(detail), [detail]);
@@ -1634,6 +1715,17 @@ function TaskConversationPanel({
                 thread={activeThread}
                 disabled={isBusy}
                 onRepair={onRepairPreviewBlockedThread}
+              />
+            ) : null}
+            {activeThread.agentMode === "workspace-handoff" ? (
+              <HandoffActionBar
+                disabled={isBusy}
+                canCopyRepairPrompt={activeThread.status === "preview-blocked"}
+                onCopyPrompt={onCopyHandoffPrompt}
+                onOpenWorkspace={onOpenHandoffWorkspace}
+                onOpenAgent={onOpenHandoffAgent}
+                onRescan={onRescanHandoffWorkspace}
+                onCopyRepairPrompt={onCopyHandoffRepairPrompt}
               />
             ) : null}
             <div className="thread-entry-list task-timeline">
@@ -1684,6 +1776,54 @@ function PreviewBlockedCallout({ thread, disabled, onRepair }: PreviewBlockedCal
         <Wrench size={14} aria-hidden="true" />
         {t("task.previewBlockedAction")}
       </button>
+    </section>
+  );
+}
+
+interface HandoffActionBarProps {
+  disabled: boolean;
+  canCopyRepairPrompt: boolean;
+  onCopyPrompt: () => void;
+  onOpenWorkspace: () => void;
+  onOpenAgent: () => void;
+  onRescan: () => void;
+  onCopyRepairPrompt: () => void;
+}
+
+function HandoffActionBar({
+  disabled,
+  canCopyRepairPrompt,
+  onCopyPrompt,
+  onOpenWorkspace,
+  onOpenAgent,
+  onRescan,
+  onCopyRepairPrompt,
+}: HandoffActionBarProps) {
+  const { t } = useDesktopLocale();
+  return (
+    <section className="handoff-action-bar" aria-label={t("task.handoff.actions")}>
+      <button type="button" disabled={disabled} onClick={onCopyPrompt} data-no-drag>
+        <Copy size={14} aria-hidden="true" />
+        {t("task.handoff.copyPrompt")}
+      </button>
+      <button type="button" disabled={disabled} onClick={onOpenWorkspace} data-no-drag>
+        <FolderOpen size={14} aria-hidden="true" />
+        {t("task.handoff.openWorkspace")}
+      </button>
+      <button type="button" disabled={disabled} onClick={onOpenAgent} data-no-drag>
+        <Bot size={14} aria-hidden="true" />
+        {t("task.handoff.openAgent")}
+      </button>
+      <button type="button" disabled={disabled} onClick={onRescan} data-no-drag>
+        <RefreshCw size={14} aria-hidden="true" />
+        {t("task.handoff.rescan")}
+      </button>
+      {canCopyRepairPrompt ? (
+        <button type="button" disabled={disabled} onClick={onCopyRepairPrompt} data-no-drag>
+          <Wrench size={14} aria-hidden="true" />
+          {t("task.handoff.copyRepairPrompt")}
+        </button>
+      ) : null}
     </section>
   );
 }
@@ -1928,6 +2068,82 @@ function AgentSelectorPanel({
               </button>
             ))
           )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+interface AgentModeSelectorPanelProps {
+  modes: AgentInteractionMode[];
+  selectedMode: AgentInteractionMode;
+  disabled: boolean;
+  isOpen: boolean;
+  onToggle: () => void;
+  onChange: (mode: AgentInteractionMode) => void;
+}
+
+function AgentModeSelectorPanel({
+  modes,
+  selectedMode,
+  disabled,
+  isOpen,
+  onToggle,
+  onChange,
+}: AgentModeSelectorPanelProps) {
+  const { t } = useDesktopLocale();
+  const selectedLabel = formatAgentInteractionMode(selectedMode, t);
+  const selectedDetail = formatAgentInteractionModeDetail(selectedMode, t);
+  const menuPosition = useComposerMenuPosition(isOpen, 220);
+
+  return (
+    <div
+      ref={menuPosition.rootRef}
+      className={`composer-picker composer-picker--agent-mode composer-picker--${menuPosition.placement} ${
+        isOpen ? "is-open" : ""
+      }`}
+    >
+      <button
+        className="composer-picker__trigger composer-picker__trigger--agent-mode"
+        type="button"
+        disabled={disabled}
+        aria-label={t("composer.agentModeSelect", { label: selectedLabel })}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        title={`${selectedLabel} · ${selectedDetail}`}
+        onClick={onToggle}
+        data-no-drag
+      >
+        <span className="composer-control-icon" aria-hidden="true">
+          ↔
+        </span>
+        <strong>{selectedLabel}</strong>
+        <span className="composer-control-chevron" aria-hidden="true">
+          ⌄
+        </span>
+      </button>
+      {isOpen ? (
+        <div
+          className="composer-picker__menu"
+          style={menuPosition.menuStyle}
+          role="listbox"
+          aria-label={t("composer.agentModeSelect", { label: selectedLabel })}
+        >
+          {modes.map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              role="option"
+              aria-selected={mode === selectedMode}
+              className={mode === selectedMode ? "is-selected" : ""}
+              onClick={() => onChange(mode)}
+              data-no-drag
+            >
+              <span aria-hidden="true">↔</span>
+              <strong>{formatAgentInteractionMode(mode, t)}</strong>
+              <small>{formatAgentInteractionModeDetail(mode, t)}</small>
+            </button>
+          ))}
         </div>
       ) : null}
     </div>

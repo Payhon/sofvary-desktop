@@ -813,6 +813,101 @@ function knownAgentEventStatus(content: string): KnownStatusCopy | null {
       hidesTechnicalDetail: true,
     };
   }
+  if (/^Workspace Handoff prepared\. Prompt file is ready\.$/i.test(content)) {
+    return {
+      title: "Workspace Handoff 已准备",
+      description: "Sofvary 已创建受控工作区和外部 Agent 提示词。",
+      tone: "success",
+      icon: "✓",
+      hidesTechnicalDetail: true,
+    };
+  }
+  if (/^Workspace Handoff prompt copied\.$/i.test(content)) {
+    return {
+      title: "Handoff 提示词已复制",
+      description: "可粘贴给外部 Agent，让它在受控工作区内生成文件。",
+      tone: "success",
+      icon: "✓",
+      hidesTechnicalDetail: true,
+    };
+  }
+  if (/^Workspace Handoff repair prompt copied\.$/i.test(content)) {
+    return {
+      title: "修复提示词已复制",
+      description: "可交给外部 Agent 处理预览诊断并继续生成。",
+      kind: "runtime",
+      tone: "success",
+      icon: "✓",
+      hidesTechnicalDetail: true,
+    };
+  }
+  if (/^Workspace Handoff folder opened\.$/i.test(content)) {
+    return {
+      title: "Handoff 工作区已打开",
+      description: "外部 Agent 应只在这个工作区边界内操作。",
+      tone: "success",
+      icon: "✓",
+      hidesTechnicalDetail: true,
+    };
+  }
+  if (/^Workspace Handoff Agent launched:/i.test(content)) {
+    return {
+      title: "外部 Agent 已启动",
+      description: "Sofvary 已通过平台抽象层在 handoff 工作区启动 Agent。",
+      tone: "working",
+      icon: "AI",
+      hidesTechnicalDetail: true,
+    };
+  }
+  if (/^Workspace Handoff is waiting for generated files\.$/i.test(content)) {
+    return {
+      title: "正在等待外部 Agent 写入文件",
+      description: "生成文件出现后可重扫工作区并进入预览。",
+      tone: "working",
+      icon: "◌",
+      hidesTechnicalDetail: true,
+    };
+  }
+  const handoffGeneratedFileMatch = content.match(/^Workspace Handoff detected (\d+) generated files\.$/i);
+  if (handoffGeneratedFileMatch) {
+    return {
+      title: `已检测到 ${handoffGeneratedFileMatch[1]} 个生成文件`,
+      description: "文件变化已进入 Sofvary 的受控 handoff 扫描结果。",
+      kind: "file",
+      tone: "success",
+      icon: "▣",
+      hidesTechnicalDetail: true,
+    };
+  }
+  if (/^Workspace Handoff contract is complete\. Starting preview\.$/i.test(content)) {
+    return {
+      title: "Handoff 合约校验通过",
+      description: "Sofvary 正在启动托管预览。",
+      kind: "runtime",
+      tone: "working",
+      icon: "▶",
+      hidesTechnicalDetail: true,
+    };
+  }
+  if (/^Workspace Handoff repair prompt ready:/i.test(content)) {
+    return {
+      title: "修复提示词已生成",
+      description: "预览诊断已写入工作区，可复制给外部 Agent 修复。",
+      kind: "runtime",
+      tone: "warning",
+      icon: "!",
+      hidesTechnicalDetail: true,
+    };
+  }
+  if (/^Workspace Handoff Agent status:/i.test(content)) {
+    return {
+      title: "外部 Agent 状态已更新",
+      description: content.replace(/^Workspace Handoff Agent status:\s*/i, ""),
+      tone: "working",
+      icon: "◌",
+      hidesTechnicalDetail: true,
+    };
+  }
   if (/^Agent session started with .* adapter$/i.test(content)) {
     return {
       title: "已连接 Agent",
