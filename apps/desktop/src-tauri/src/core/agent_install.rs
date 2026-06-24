@@ -1,7 +1,7 @@
 use crate::core::agent_catalog::discover_agents_with_adapter;
 use crate::core::agent_config::{
-    AgentCommandConfig, AgentConfig, AgentConfigError, AgentConfigStore, AgentInstallSource,
-    AgentProvider, AgentTestRecord,
+    fresh_test_record, AgentCommandConfig, AgentConfig, AgentConfigError, AgentConfigStore,
+    AgentInstallSource, AgentProvider, AgentTestRecord, AgentTransportKind,
 };
 use crate::core::policy_engine::PolicyEngine;
 use crate::core::policy_types::{PolicyAgentInstallRequest, PolicyApprovalSet};
@@ -373,13 +373,19 @@ fn install_sofvary_pi(
         &bin_path,
         toolchain.node.executable.as_ref(),
     )?;
+    let startup_detail = verify_pi_shim_starts(adapter, &shim)?;
 
     let previous = agent_store
         .load_with_adapter(adapter)?
         .agents
         .into_iter()
         .find(|agent| agent.id == "sofvary-pi");
-    let config = pi_agent_config(previous, shim.clone());
+    let mut config = pi_agent_config(previous, shim.clone());
+    config.last_test = Some(fresh_test_record(
+        true,
+        AgentTransportKind::PiRpc,
+        startup_detail,
+    ));
     let mut state = agent_store.load_with_adapter(adapter)?;
     if let Some(existing) = state.agents.iter_mut().find(|agent| agent.id == config.id) {
         *existing = config;
@@ -428,12 +434,7 @@ fn install_package_dependencies(
         .unwrap_or_else(|| PathBuf::from("pnpm"));
     let output = adapter.run_process(CommandSpec {
         executable: pnpm,
-        args: vec![
-            "install".to_string(),
-            "--prod".to_string(),
-            "--ignore-scripts".to_string(),
-            "--no-fund".to_string(),
-        ],
+        args: pi_dependency_install_args(),
         cwd: package_dir.to_path_buf(),
         env: HashMap::new(),
         allowed_network: false,
@@ -449,6 +450,40 @@ fn install_package_dependencies(
         ))),
         Err(error) => Err(AgentInstallError::Unsupported(format!(
             "Sofvary Pi requires pnpm from the Node.js Toolchain to install package dependencies: {error}"
+        ))),
+    }
+}
+
+fn pi_dependency_install_args() -> Vec<String> {
+    vec![
+        "install".to_string(),
+        "--prod".to_string(),
+        "--ignore-scripts".to_string(),
+    ]
+}
+
+fn verify_pi_shim_starts(adapter: &dyn PlatformAdapter, shim: &Path) -> AgentInstallResult<String> {
+    let output = adapter.run_process(CommandSpec {
+        executable: shim.to_path_buf(),
+        args: vec!["--version".to_string()],
+        cwd: adapter.dirs()?.data_dir,
+        env: HashMap::new(),
+        allowed_network: false,
+        timeout_ms: Some(15_000),
+        kill_on_drop: true,
+    });
+    match output {
+        Ok(output) if output.status_code == Some(0) => {
+            let version = summarize_command_output(&output.stdout, &output.stderr);
+            Ok(format!("Pi command startup check succeeded: {version}"))
+        }
+        Ok(output) => Err(AgentInstallError::InvalidArtifact(format!(
+            "Pi command startup check failed with {:?}: {}",
+            output.status_code,
+            summarize_command_output(&output.stderr, &output.stdout)
+        ))),
+        Err(error) => Err(AgentInstallError::InvalidArtifact(format!(
+            "Pi command startup check failed: {error}"
         ))),
     }
 }
@@ -1082,6 +1117,14 @@ mod tests {
             config.cli.expect("pi cli").args,
             ["--mode".to_string(), "rpc".to_string()]
         );
+    }
+
+    #[test]
+    fn pi_dependency_install_args_are_pnpm_10_compatible() {
+        let args = pi_dependency_install_args();
+
+        assert_eq!(args, ["install", "--prod", "--ignore-scripts"]);
+        assert!(!args.iter().any(|arg| arg == "--no-fund"));
     }
 
     #[test]

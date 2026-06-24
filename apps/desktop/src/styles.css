@@ -2769,6 +2769,7 @@ textarea:disabled {
 
 .workspace-row .workspace-row__preview,
 .workspace-row .workspace-row__export,
+.workspace-row .workspace-row__rename-button,
 .workspace-row .workspace-row__release {
   color: #bfdbfe;
 }
@@ -2795,6 +2796,14 @@ textarea:disabled {
 
 .workspace-row .workspace-row__modify:hover:not(:disabled) {
   background: rgba(59, 130, 246, 0.28);
+}
+
+.workspace-row .workspace-row__rename-button {
+  color: #bfdbfe;
+}
+
+.workspace-row .workspace-row__rename-button:hover:not(:disabled) {
+  background: rgba(96, 165, 250, 0.2);
 }
 
 .workspace-row .workspace-row__delete {
@@ -3002,6 +3011,60 @@ textarea:disabled {
   display: grid;
   min-width: 0;
   gap: 2px;
+}
+
+.inline-rename {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) 28px 28px;
+  align-items: center;
+  gap: 4px;
+}
+
+.inline-rename input {
+  min-width: 0;
+  height: 30px;
+  border: 1px solid rgba(125, 211, 252, 0.28);
+  border-radius: 8px;
+  padding: 0 9px;
+  background: rgba(15, 23, 42, 0.56);
+  color: #f8fafc;
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.inline-rename input:focus {
+  border-color: rgba(125, 211, 252, 0.58);
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.16);
+}
+
+.inline-rename button {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  padding: 0;
+  background: rgba(15, 23, 42, 0.62);
+  color: #bfdbfe;
+  cursor: pointer;
+}
+
+.inline-rename button:hover,
+.inline-rename button:focus-visible {
+  border-color: rgba(125, 211, 252, 0.34);
+  background: rgba(59, 130, 246, 0.2);
+}
+
+.inline-rename svg {
+  width: 14px;
+  height: 14px;
+}
+
+.workspace-row__rename {
+  max-width: min(260px, 100%);
 }
 
 .workspace-row__actions {
@@ -3762,7 +3825,7 @@ textarea:disabled {
   width: 100%;
   border: 1px solid transparent;
   border-radius: 8px;
-  padding: 10px 38px 10px 12px;
+  padding: 10px 66px 10px 12px;
   background: transparent;
   color: #e5edf7;
   cursor: pointer;
@@ -3786,16 +3849,26 @@ textarea:disabled {
   background: rgba(148, 163, 184, 0.12);
 }
 
-.thread-list__delete {
+.thread-list__actions {
   position: absolute;
   top: 50%;
   right: 7px;
   display: inline-flex;
   align-items: center;
+  gap: 4px;
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.thread-list__rename-button,
+.thread-list__delete {
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
   width: 24px;
   height: 24px;
-  transform: translateY(-50%);
   border: 1px solid transparent;
   border-radius: 6px;
   padding: 0;
@@ -3805,15 +3878,24 @@ textarea:disabled {
   font-size: 14px;
   font-weight: 800;
   line-height: 1;
-  opacity: 0;
-  pointer-events: none;
   transition: opacity 120ms ease, background-color 140ms ease, color 140ms ease;
 }
 
-.thread-list__item:hover .thread-list__delete,
-.thread-list__item:focus-within .thread-list__delete {
+.thread-list__rename-button svg,
+.thread-list__delete svg {
+  width: 13px;
+  height: 13px;
+}
+
+.thread-list__item:hover .thread-list__actions,
+.thread-list__item:focus-within .thread-list__actions {
   opacity: 1;
   pointer-events: auto;
+}
+
+.thread-list__rename-button:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.86);
+  color: #dbeafe;
 }
 
 .thread-list__delete:hover:not(:disabled) {
@@ -3821,13 +3903,18 @@ textarea:disabled {
   color: #fee2e2;
 }
 
+.thread-list__rename-button:disabled,
 .thread-list__delete:disabled {
   cursor: not-allowed;
 }
 
-.thread-list__item:hover .thread-list__delete:disabled,
-.thread-list__item:focus-within .thread-list__delete:disabled {
+.thread-list__item:hover .thread-list__actions:has(button:disabled),
+.thread-list__item:focus-within .thread-list__actions:has(button:disabled) {
   opacity: 0.46;
+}
+
+.thread-list__rename {
+  margin: 4px 58px 4px 4px;
 }
 
 .thread-list small,
@@ -3962,6 +4049,125 @@ textarea:disabled {
 .thread-preview-blocked button:disabled {
   cursor: not-allowed;
   opacity: 0.58;
+}
+
+.agent-activity-callout {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  border: 1px solid rgba(96, 165, 250, 0.22);
+  border-radius: 8px;
+  padding: 11px 12px;
+  background: rgba(15, 23, 42, 0.42);
+  color: #dbeafe;
+}
+
+.agent-activity-callout--long {
+  border-color: rgba(251, 191, 36, 0.32);
+  background: rgba(66, 32, 6, 0.22);
+  color: #fde68a;
+}
+
+.agent-activity-callout--stale {
+  border-color: rgba(248, 113, 113, 0.34);
+  background: rgba(69, 10, 10, 0.24);
+  color: #fecaca;
+}
+
+.agent-activity-callout__header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.agent-activity-callout__icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(147, 197, 253, 0.26);
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.18);
+}
+
+.agent-activity-callout__header div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.agent-activity-callout strong {
+  color: #eff6ff;
+  font-size: 13px;
+}
+
+.agent-activity-callout small {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(219, 234, 254, 0.72);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-activity-callout p {
+  margin: 0;
+  color: currentColor;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.agent-activity-callout__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-activity-callout__stats span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  border: 1px solid rgba(147, 197, 253, 0.18);
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: rgba(30, 64, 175, 0.14);
+  color: rgba(219, 234, 254, 0.82);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.agent-activity-callout__stats b {
+  color: #eff6ff;
+  font-size: 11px;
+}
+
+.agent-activity-callout__latest {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.agent-activity-callout__latest span {
+  color: rgba(219, 234, 254, 0.66);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.agent-activity-callout__latest code {
+  display: block;
+  max-height: 72px;
+  overflow: auto;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgba(2, 6, 23, 0.4);
+  color: #e5e7eb;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .handoff-action-bar {
@@ -5413,6 +5619,47 @@ textarea:disabled {
   background: rgba(245, 158, 11, 0.1);
 }
 
+.command-shell[data-theme="light"] .agent-activity-callout {
+  border-color: rgba(37, 99, 235, 0.18);
+  background: rgba(239, 246, 255, 0.88);
+  color: #1e3a8a;
+}
+
+.command-shell[data-theme="light"] .agent-activity-callout--long {
+  border-color: rgba(217, 119, 6, 0.24);
+  background: rgba(254, 243, 199, 0.9);
+  color: #92400e;
+}
+
+.command-shell[data-theme="light"] .agent-activity-callout--stale {
+  border-color: rgba(220, 38, 38, 0.24);
+  background: rgba(254, 226, 226, 0.9);
+  color: #991b1b;
+}
+
+.command-shell[data-theme="light"] .agent-activity-callout__icon,
+.command-shell[data-theme="light"] .agent-activity-callout__stats span {
+  border-color: rgba(37, 99, 235, 0.18);
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.command-shell[data-theme="light"] .agent-activity-callout strong,
+.command-shell[data-theme="light"] .agent-activity-callout__stats b {
+  color: #0f172a;
+}
+
+.command-shell[data-theme="light"] .agent-activity-callout small,
+.command-shell[data-theme="light"] .agent-activity-callout__stats span,
+.command-shell[data-theme="light"] .agent-activity-callout__latest span {
+  color: #475569;
+}
+
+.command-shell[data-theme="light"] .agent-activity-callout__latest code {
+  border-color: rgba(37, 99, 235, 0.14);
+  background: rgba(255, 255, 255, 0.72);
+  color: #0f172a;
+}
+
 .command-shell[data-theme="light"] .handoff-action-bar {
   border-color: rgba(14, 116, 144, 0.18);
   background: rgba(236, 254, 255, 0.86);
@@ -5584,6 +5831,7 @@ textarea:disabled {
 
 .command-shell[data-theme="light"] .workspace-row .workspace-row__preview,
 .command-shell[data-theme="light"] .workspace-row .workspace-row__export,
+.command-shell[data-theme="light"] .workspace-row .workspace-row__rename-button,
 .command-shell[data-theme="light"] .workspace-row .workspace-row__release,
 .command-shell[data-theme="light"] .workspace-list__import-button {
   color: #2563eb;
@@ -5609,16 +5857,40 @@ textarea:disabled {
   color: #1d4ed8;
 }
 
+.command-shell[data-theme="light"] .inline-rename input {
+  border-color: rgba(37, 99, 235, 0.18);
+  background: rgba(255, 255, 255, 0.94);
+  color: #0f172a;
+}
+
+.command-shell[data-theme="light"] .inline-rename button {
+  border-color: rgba(15, 23, 42, 0.1);
+  background: rgba(255, 255, 255, 0.86);
+  color: #2563eb;
+}
+
+.command-shell[data-theme="light"] .inline-rename button:hover,
+.command-shell[data-theme="light"] .inline-rename button:focus-visible {
+  border-color: rgba(37, 99, 235, 0.22);
+  background: rgba(219, 234, 254, 0.9);
+}
+
 .command-shell[data-theme="light"] .workspace-row .workspace-row__delete:hover:not(:disabled) {
   border-color: rgba(220, 38, 38, 0.2);
   background: rgba(254, 226, 226, 0.9);
   color: #b91c1c;
 }
 
+.command-shell[data-theme="light"] .thread-list__rename-button,
 .command-shell[data-theme="light"] .thread-list__delete {
   background: rgba(255, 255, 255, 0.9);
   color: #64748b;
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+}
+
+.command-shell[data-theme="light"] .thread-list__rename-button:hover:not(:disabled) {
+  background: rgba(37, 99, 235, 0.9);
+  color: #ffffff;
 }
 
 .command-shell[data-theme="light"] .thread-list__delete:hover:not(:disabled) {

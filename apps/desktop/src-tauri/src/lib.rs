@@ -420,6 +420,18 @@ fn get_workspace(
 }
 
 #[tauri::command]
+fn rename_workspace(
+    state: tauri::State<'_, AppState>,
+    app_id: String,
+    name: String,
+) -> Result<AppBoxManifest, String> {
+    state
+        .workspace_manager
+        .rename_workspace(app_id, name)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn delete_workspace(
     state: tauri::State<'_, AppState>,
     app_id: String,
@@ -614,6 +626,27 @@ fn get_build_thread(
         .build_thread_store
         .get(&thread_id)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn rename_build_thread(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    thread_id: String,
+    title: String,
+) -> Result<BuildThreadSummary, String> {
+    let summary = state
+        .build_thread_store
+        .update(
+            &thread_id,
+            BuildThreadUpdate {
+                title: Some(title),
+                ..BuildThreadUpdate::default()
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    emit_build_thread_updated(&app, &summary);
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -1046,6 +1079,11 @@ fn run_build_thread_task(
             append_gateway_uni_event(&app, &build_thread_store, &thread_id, event);
         })
     };
+    let live_agent_event_sink = if agent_config.provider == AgentProvider::SofvaryPi {
+        None
+    } else {
+        Some(agent_event_sink.clone())
+    };
 
     let build_result = match run_context {
         BuildThreadRunContext::NewApp => runtime_manager
@@ -1056,7 +1094,7 @@ fn run_build_thread_task(
                 &workspace_manager,
                 &policy_approvals,
                 &agent_config,
-                Some(agent_event_sink),
+                live_agent_event_sink.clone(),
                 Some(thread_id.clone()),
                 Some(gateway_event_sink),
             ),
@@ -1069,7 +1107,7 @@ fn run_build_thread_task(
                 &workspace_manager,
                 &policy_approvals,
                 &agent_config,
-                Some(agent_event_sink),
+                live_agent_event_sink,
                 Some(thread_id.clone()),
                 Some(gateway_event_sink),
             ),
@@ -1091,6 +1129,7 @@ fn run_build_thread_task(
                     preview: Some(Some(preview.clone())),
                     preview_issue: Some(None),
                     error: Some(None),
+                    ..BuildThreadUpdate::default()
                 },
             );
             if let Ok(summary) = summary {
@@ -1444,6 +1483,7 @@ fn preview_handoff_workspace(
                     preview: Some(Some(preview.clone())),
                     preview_issue: Some(None),
                     error: Some(None),
+                    ..BuildThreadUpdate::default()
                 },
             );
             if let Ok(summary) = summary {
@@ -1558,6 +1598,7 @@ fn mark_build_thread_preview_blocked(
             preview: Some(None),
             preview_issue: Some(Some(issue)),
             error: Some(None),
+            ..BuildThreadUpdate::default()
         },
     );
     if let Ok(summary) = summary {
@@ -1993,6 +2034,40 @@ fn llm_api_key_env(kind: LlmProviderKind) -> &'static str {
     }
 }
 
+fn llm_provider_requires_api_key(kind: LlmProviderKind) -> bool {
+    !matches!(
+        kind,
+        LlmProviderKind::Ollama | LlmProviderKind::OpenaiCompatible
+    )
+}
+
+fn llm_provider_test_outcome(
+    provider: &LlmProviderConfig,
+    api_key_available: bool,
+) -> (bool, String) {
+    if !llm_provider_requires_api_key(provider.kind) {
+        return (
+            true,
+            "LLM provider config is syntactically valid; API key is optional for this provider."
+                .to_string(),
+        );
+    }
+    if api_key_available {
+        return (
+            true,
+            "LLM provider credential is available from secure storage or environment.".to_string(),
+        );
+    }
+
+    (
+        false,
+        format!(
+            "LLM provider config has no available API key. Save the key again or set {}.",
+            llm_api_key_env(provider.kind)
+        ),
+    )
+}
+
 #[tauri::command]
 fn discover_agents() -> Result<Vec<DiscoveredAgent>, String> {
     discover_agent_catalog().map_err(|error| error.to_string())
@@ -2262,12 +2337,15 @@ fn test_llm_provider_config(
         .into_iter()
         .find(|provider| provider.provider_id == provider_id)
         .ok_or_else(|| format!("llm provider config not found: {provider_id}"))?;
-    let detail = match provider.kind {
-        LlmProviderKind::Ollama => "Ollama provider config is syntactically valid.",
-        _ if provider.api_key_ref.is_some() => "LLM provider config has a secure key reference.",
-        _ => "LLM provider config has no API key reference.",
+    let credential_check = resolve_llm_api_key(&provider);
+    let (ok, detail) = match credential_check {
+        Ok(api_key) => llm_provider_test_outcome(&provider, api_key.is_some()),
+        Err(error) => (
+            false,
+            format!("LLM provider credential check failed: {error}"),
+        ),
     };
-    let record = fresh_llm_test_record(true, detail);
+    let record = fresh_llm_test_record(ok, detail);
     let _ = state
         .llm_provider_store
         .record_test(&provider_id, record.clone())
@@ -2337,6 +2415,7 @@ fn retry_build_thread_preview(
                         preview: Some(Some(preview.clone())),
                         preview_issue: Some(None),
                         error: Some(None),
+                        ..BuildThreadUpdate::default()
                     },
                 )
                 .map_err(|error| error.to_string())?;
@@ -2934,6 +3013,7 @@ pub fn run() {
             create_workspace,
             list_workspaces,
             get_workspace,
+            rename_workspace,
             delete_workspace,
             create_snapshot,
             list_snapshots,
@@ -2944,6 +3024,7 @@ pub fn run() {
             start_build_thread,
             list_build_threads,
             get_build_thread,
+            rename_build_thread,
             delete_build_thread,
             continue_build_thread,
             cancel_build_thread,
@@ -3176,6 +3257,48 @@ mod tests {
         assert!(!is_registered_hotkey_conflict(
             "failed to initialize plugin `global-shortcut`: permission denied"
         ));
+    }
+
+    #[test]
+    fn llm_provider_test_fails_when_required_key_is_missing() {
+        let provider = llm_provider_for_test(LlmProviderKind::KimiCoding);
+        let (ok, detail) = llm_provider_test_outcome(&provider, false);
+
+        assert!(!ok);
+        assert!(detail.contains("KIMI_API_KEY"));
+    }
+
+    #[test]
+    fn llm_provider_test_passes_when_required_key_is_available() {
+        let provider = llm_provider_for_test(LlmProviderKind::KimiCoding);
+        let (ok, detail) = llm_provider_test_outcome(&provider, true);
+
+        assert!(ok);
+        assert!(detail.contains("credential is available"));
+    }
+
+    #[test]
+    fn llm_provider_test_allows_keyless_local_providers() {
+        for kind in [LlmProviderKind::Ollama, LlmProviderKind::OpenaiCompatible] {
+            let provider = llm_provider_for_test(kind);
+            let (ok, detail) = llm_provider_test_outcome(&provider, false);
+
+            assert!(ok);
+            assert!(detail.contains("API key is optional"));
+        }
+    }
+
+    fn llm_provider_for_test(kind: LlmProviderKind) -> LlmProviderConfig {
+        LlmProviderConfig {
+            provider_id: kind.as_pi_provider().to_string(),
+            label: kind.as_pi_provider().to_string(),
+            kind,
+            base_url: None,
+            model: "model".to_string(),
+            api_key_ref: Some("sofvary.llm-provider.test.api-key".to_string()),
+            enabled: true,
+            last_test: None,
+        }
     }
 }
 

@@ -2,7 +2,9 @@ use crate::platform::process::{
     kill_process_tree, run_structured_process, spawn_structured_process,
 };
 use crate::platform::protocol::register_protocol_handler_stub;
-use crate::platform::secure_store::{secure_store_get_stub, secure_store_set_stub};
+use crate::platform::secure_store::{
+    secure_store_get_macos_keychain, secure_store_set_macos_keychain,
+};
 use crate::platform::{
     allocate_loopback_port, current_arch, default_work_area, normalize_path_lexically, CommandSpec,
     OsKind, PlatformAdapter, PlatformDirs, PlatformError, PlatformResult, ProcessHandle,
@@ -116,11 +118,11 @@ impl PlatformAdapter for MacosPlatformAdapter {
     }
 
     fn secure_store_set(&self, key: &str, value: &str) -> PlatformResult<()> {
-        secure_store_set_stub(key, value)
+        secure_store_set_macos_keychain(key, value)
     }
 
     fn secure_store_get(&self, key: &str) -> PlatformResult<Option<String>> {
-        secure_store_get_stub(key)
+        secure_store_get_macos_keychain(key)
     }
 
     fn current_webview_profile(&self) -> WebviewProfile {

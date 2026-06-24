@@ -39,6 +39,7 @@ use crate::core::runtime_diagnostic::{
     diagnostic_from_react_sqlite_error, diagnostic_from_react_vite_error, RuntimeDiagnostic,
     RuntimeDiagnosticCategory, RuntimeDiagnosticRepairTarget,
 };
+use crate::core::software_naming::suggest_software_name;
 use crate::core::static_html_runtime::{
     StaticHtmlRuntime, StaticRuntimeError, StaticRuntimeServer,
 };
@@ -3028,19 +3029,7 @@ impl Default for RuntimeManager {
 }
 
 fn derive_app_name(requirement: &str) -> String {
-    let trimmed = requirement.trim();
-    if trimmed.is_empty() {
-        return "Static HTML App".to_string();
-    }
-
-    trimmed
-        .split_whitespace()
-        .take(6)
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(60)
-        .collect()
+    suggest_software_name(requirement)
 }
 
 fn stable_react_sqlite_fallback_prompt(
@@ -3053,8 +3042,9 @@ fn stable_react_sqlite_fallback_prompt(
     } else {
         requirement
     };
+    let software_name = suggest_software_name(requirement);
     format!(
-        "Create a stable React + SQLite app for this requirement: {requirement}\n\nRuntime repair fallback reason: {}\nUse the Sofvary managed React + SQLite baseline with local CRUD, a Vite frontend, and a local API server.",
+        "Software name: {software_name}\nUser requirement:\n{requirement}\n\nRuntime repair fallback reason: {}\nUse the Sofvary managed React + SQLite baseline with local CRUD, a Vite frontend, and a local API server.\nVisible app title rule: use only the software name, not the full user requirement, PromptEnvelope text, or runtime repair fallback reason.",
         diagnostic.summary()
     )
 }
@@ -3086,6 +3076,7 @@ fn runtime_repair_prompt(
 
     format!(
         "Repair the generated Sofvary app so it starts successfully.\n\
+Software name: {}\n\
 Original user intent:\n{original_requirement}\n\n\
 Runtime kind: {}\n\
 Repair attempt: {attempt}/{max_attempts}\n\
@@ -3096,7 +3087,8 @@ Diagnostic category: {:?}\n\
 Runtime log path: {log_path}\n\n\
 stdout tail:\n{stdout}\n\n\
 stderr tail:\n{stderr}\n\n\
-Keep the same output contract and regenerate every required file exactly. Do not add files outside the allowed set. Do not include Sofvary shell UI.",
+Keep the same output contract and regenerate every required file exactly. Do not add files outside the allowed set. Do not include Sofvary shell UI. The visible app title must stay a concise software name and must not display this repair prompt or diagnostics.",
+        suggest_software_name(original_requirement),
         envelope.runtime_policy.runtime_kind,
         diagnostic.stage,
         diagnostic.status_code,

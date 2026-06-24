@@ -15,6 +15,13 @@ export async function listWorkspaces(): Promise<WorkspaceSummary[]> {
   return safeInvoke<WorkspaceSummary[]>("list_workspaces");
 }
 
+export async function renameWorkspace(
+  workspace: WorkspaceSummary,
+  name: string,
+): Promise<AppBoxManifest> {
+  return safeInvoke<AppBoxManifest>("rename_workspace", { appId: workspace.appId, name });
+}
+
 export async function deleteWorkspace(workspace: WorkspaceSummary): Promise<AppBoxManifest> {
   return safeInvoke<AppBoxManifest>("delete_workspace", { appId: workspace.appId });
 }

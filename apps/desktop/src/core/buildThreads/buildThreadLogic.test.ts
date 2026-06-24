@@ -16,6 +16,7 @@ import {
   formatThreadEntryLabel,
   formatBuildThreadStatus,
   getBuildOverlayViewModel,
+  getBuildThreadActivity,
   getWorkspaceBuildThread,
   sortBuildThreads,
   summarizeBuildThreadError,
@@ -268,6 +269,66 @@ test("visibleThreadEntries does not merge assistant chunks across threads", () =
   const entries = visibleThreadEntries(detail);
 
   assert.equal(entries.length, 2);
+});
+
+test("getBuildThreadActivity summarizes long-running Gateway communication", () => {
+  const detail: BuildThreadDetail = {
+    summary: { ...baseThread, status: "building", updatedAt: "2026-06-10T08:15:00Z" },
+    entries: [
+      {
+        id: "gateway-a",
+        threadId: baseThread.id,
+        timestamp: "2026-06-10T08:00:01Z",
+        kind: "agent-event",
+        content: "Session started",
+        metadata: {
+          gatewayUniEvent: gatewayEvent({
+            type: "session.started",
+            transport: "pi-rpc",
+          }),
+        },
+      },
+      {
+        id: "message-a",
+        threadId: baseThread.id,
+        timestamp: "2026-06-10T08:15:00Z",
+        kind: "assistant",
+        content: "Agent message: 正在生成课程表页面",
+        metadata: {
+          gatewayUniEvent: gatewayEvent({
+            eventId: "gateway-b",
+            type: "message.delta",
+            timestamp: "2026-06-10T08:15:00Z",
+            transport: "pi-rpc",
+            sequence: 2,
+            payload: { text: "正在生成课程表页面" },
+          }),
+        },
+      },
+      {
+        id: "file-a",
+        threadId: baseThread.id,
+        timestamp: "2026-06-10T08:15:01Z",
+        kind: "file",
+        content: "File written: react/src/App.tsx",
+        metadata: {},
+      },
+    ],
+  };
+
+  const activity = getBuildThreadActivity(
+    { ...baseThread, status: "building", updatedAt: "2026-06-10T08:15:01Z" },
+    detail,
+    Date.parse("2026-06-10T08:16:30Z"),
+  );
+
+  assert.equal(activity?.eventCount, 3);
+  assert.equal(activity?.gatewayEventCount, 2);
+  assert.equal(activity?.fileEventCount, 1);
+  assert.equal(activity?.transport, "pi-rpc");
+  assert.equal(activity?.latestOutputPreview, "正在生成课程表页面");
+  assert.equal(activity?.isLongRunning, true);
+  assert.equal(activity?.isStale, true);
 });
 
 test("appendBuildThreadEntry merges live assistant chunks", () => {

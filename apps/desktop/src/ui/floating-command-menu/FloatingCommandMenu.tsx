@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Bot,
   Boxes,
+  Check,
   Copy,
   Download,
   Eye,
@@ -27,6 +28,7 @@ import {
   Trash2,
   Upload,
   Wrench,
+  X,
 } from "lucide-react";
 import type {
   AgentConfig,
@@ -74,9 +76,11 @@ import {
 import {
   canContinueBuildThread,
   formatBuildThreadStatus,
+  getBuildThreadActivity,
   getWorkspaceBuildThread,
   summarizeBuildThreadError,
   visibleThreadEntries,
+  type BuildThreadActivitySummary,
 } from "../../core/buildThreads/buildThreadLogic";
 import {
   mergeBuildThreadPresentationItems,
@@ -271,6 +275,19 @@ function fallbackDesktopT(
     "task.previewBlockedTitle": "Preview environment not ready",
     "task.previewBlockedCopy": "The software assets are ready, but the managed runtime environment must be repaired before preview.",
     "task.previewBlockedAction": "Install environment and preview",
+    "task.activity.title": "Agent communication",
+    "task.activity.active": "Agent communication is live. Generated files are written as soon as they become stable.",
+    "task.activity.longRunning": "This Agent session has been running for {value}. Sofvary keeps live file writes enabled and will stop managed slow streams at the safety limit.",
+    "task.activity.stale": "No new Agent event for {value}. Check the latest output and cancel if the task is no longer progressing.",
+    "task.activity.events": "events",
+    "task.activity.gateway": "gateway",
+    "task.activity.output": "output",
+    "task.activity.files": "files",
+    "task.activity.tools": "tools",
+    "task.activity.latest": "Latest output",
+    "action.rename": "Rename",
+    "task.rename": "Rename task",
+    "workspace.rename": "Rename software",
   };
   return (messages[key] ?? fallback ?? key).replace(/\{([a-zA-Z0-9_.-]+)\}/g, (match, name) =>
     params[name] === undefined || params[name] === null ? match : String(params[name]),
@@ -337,6 +354,7 @@ interface FloatingCommandMenuProps {
   onStartNewBuildThreadDraft: () => void;
   onContinueBuildThread: () => void;
   onCancelBuildThread: () => void;
+  onRenameBuildThread: (threadId: string, title: string) => void;
   onDeleteBuildThread: (threadId: string) => void;
   onRepairPreviewBlockedThread: (thread: BuildThreadSummary) => void;
   onCopyHandoffPrompt: () => void;
@@ -378,6 +396,7 @@ interface FloatingCommandMenuProps {
   onPreviewWorkspace: (workspace: WorkspaceSummary) => void;
   onRepairWorkspacePreview: (workspace: WorkspaceSummary) => void;
   onModifyWorkspace: (workspace: WorkspaceSummary) => void;
+  onRenameWorkspace: (workspace: WorkspaceSummary, name: string) => void;
   onExportWorkspace: (workspace: WorkspaceSummary) => void;
   onReleaseWorkspace: (workspace: WorkspaceSummary) => void;
   onDeleteWorkspace: (workspace: WorkspaceSummary) => void;
@@ -442,6 +461,7 @@ export function FloatingCommandMenu({
   onStartNewBuildThreadDraft,
   onContinueBuildThread,
   onCancelBuildThread,
+  onRenameBuildThread,
   onDeleteBuildThread,
   onRepairPreviewBlockedThread,
   onCopyHandoffPrompt,
@@ -477,6 +497,7 @@ export function FloatingCommandMenu({
   onPreviewWorkspace,
   onRepairWorkspacePreview,
   onModifyWorkspace,
+  onRenameWorkspace,
   onExportWorkspace,
   onReleaseWorkspace,
   onDeleteWorkspace,
@@ -565,6 +586,7 @@ export function FloatingCommandMenu({
             onStartNew={onStartNewBuildThreadDraft}
             onContinue={onContinueBuildThread}
             onCancel={onCancelBuildThread}
+            onRename={onRenameBuildThread}
             onDelete={onDeleteBuildThread}
             onRepairPreviewBlockedThread={onRepairPreviewBlockedThread}
             onCopyHandoffPrompt={onCopyHandoffPrompt}
@@ -589,6 +611,7 @@ export function FloatingCommandMenu({
             onPreviewWorkspace={onPreviewWorkspace}
             onRepairWorkspacePreview={onRepairWorkspacePreview}
             onModifyWorkspace={onModifyWorkspace}
+            onRenameWorkspace={onRenameWorkspace}
             onExportWorkspace={onExportWorkspace}
             onReleaseWorkspace={onReleaseWorkspace}
             onDeleteWorkspace={onDeleteWorkspace}
@@ -1229,6 +1252,7 @@ interface CreateTaskSurfaceProps {
   onStartNew: () => void;
   onContinue: () => void;
   onCancel: () => void;
+  onRename: (threadId: string, title: string) => void;
   onDelete: (threadId: string) => void;
   onRepairPreviewBlockedThread: (thread: BuildThreadSummary) => void;
   onCopyHandoffPrompt: () => void;
@@ -1275,6 +1299,7 @@ function CreateTaskSurface({
   onStartNew,
   onContinue,
   onCancel,
+  onRename,
   onDelete,
   onRepairPreviewBlockedThread,
   onCopyHandoffPrompt,
@@ -1422,6 +1447,7 @@ function CreateTaskSurface({
             isOpen={shouldShowTaskRail}
             onStartNew={startNew}
             onSelect={selectThread}
+            onRename={onRename}
             onDelete={onDelete}
           />
         ) : null}
@@ -1582,6 +1608,7 @@ interface TaskRailProps {
   isOpen: boolean;
   onStartNew: () => void;
   onSelect: (threadId: string) => void;
+  onRename: (threadId: string, title: string) => void;
   onDelete: (threadId: string) => void;
 }
 
@@ -1592,9 +1619,32 @@ function TaskRail({
   isOpen,
   onStartNew,
   onSelect,
+  onRename,
   onDelete,
 }: TaskRailProps) {
   const { t } = useDesktopLocale();
+  const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+
+  const startRename = (thread: BuildThreadSummary) => {
+    setEditingThreadId(thread.id);
+    setRenameDraft(thread.title);
+  };
+
+  const submitRename = (thread: BuildThreadSummary) => {
+    const nextTitle = renameDraft.trim();
+    if (nextTitle && nextTitle !== thread.title) {
+      onRename(thread.id, nextTitle);
+    }
+    setEditingThreadId(null);
+    setRenameDraft("");
+  };
+
+  const cancelRename = () => {
+    setEditingThreadId(null);
+    setRenameDraft("");
+  };
+
   return (
     <aside className="task-rail" aria-label={t("task.session")} aria-hidden={!isOpen}>
       {isOpen ? (
@@ -1618,42 +1668,89 @@ function TaskRail({
           {threads.length === 0 ? (
             <p className="workspace-list__empty">{t("task.empty")}</p>
           ) : null}
-          {threads.map((thread) => (
-            <div key={thread.id} className="thread-list__item">
-              <button
-                type="button"
-                className={`thread-list__select ${
-                  thread.id === activeThread?.id ? "is-active" : ""
-                }`}
-                onClick={() => onSelect(thread.id)}
-              >
-                <span className="thread-list__select-icon" aria-hidden="true">
-                  {thread.id === activeThread?.id ? (
-                    <ListTodo aria-hidden="true" />
-                  ) : (
-                    <FileStack aria-hidden="true" />
-                  )}
-                </span>
-                <span className="thread-list__select-copy">
-                  <strong>{thread.title}</strong>
-                  <small>
-                    {formatBuildThreadStatus(thread, t)} · {thread.runtimeKind}
-                  </small>
-                </span>
-              </button>
-              <button
-                type="button"
-                className="thread-list__delete"
-                disabled={isBusy}
-                aria-label={`${t("task.delete")} ${thread.title}`}
-                title={t("task.delete")}
-                onClick={() => onDelete(thread.id)}
-                data-no-drag
-              >
-                <Trash2 aria-hidden="true" />
-              </button>
-            </div>
-          ))}
+          {threads.map((thread) => {
+            const isEditing = editingThreadId === thread.id;
+
+            return (
+              <div key={thread.id} className="thread-list__item">
+                {isEditing ? (
+                  <form
+                    className="inline-rename thread-list__rename"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      submitRename(thread);
+                    }}
+                    data-no-drag
+                  >
+                    <input
+                      value={renameDraft}
+                      autoFocus
+                      maxLength={32}
+                      aria-label={t("task.rename")}
+                      onChange={(event) => setRenameDraft(event.target.value)}
+                    />
+                    <button type="submit" title={t("action.save")} aria-label={t("action.save")}>
+                      <Check aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      title={t("action.cancel")}
+                      aria-label={t("action.cancel")}
+                      onClick={cancelRename}
+                    >
+                      <X aria-hidden="true" />
+                    </button>
+                  </form>
+                ) : (
+                  <button
+                    type="button"
+                    className={`thread-list__select ${
+                      thread.id === activeThread?.id ? "is-active" : ""
+                    }`}
+                    onClick={() => onSelect(thread.id)}
+                  >
+                    <span className="thread-list__select-icon" aria-hidden="true">
+                      {thread.id === activeThread?.id ? (
+                        <ListTodo aria-hidden="true" />
+                      ) : (
+                        <FileStack aria-hidden="true" />
+                      )}
+                    </span>
+                    <span className="thread-list__select-copy">
+                      <strong>{thread.title}</strong>
+                      <small>
+                        {formatBuildThreadStatus(thread, t)} · {thread.runtimeKind}
+                      </small>
+                    </span>
+                  </button>
+                )}
+                <div className="thread-list__actions">
+                  <button
+                    type="button"
+                    className="thread-list__rename-button"
+                    disabled={isBusy || isEditing}
+                    aria-label={`${t("task.rename")} ${thread.title}`}
+                    title={t("action.rename")}
+                    onClick={() => startRename(thread)}
+                    data-no-drag
+                  >
+                    <PencilLine aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="thread-list__delete"
+                    disabled={isBusy || isEditing}
+                    aria-label={`${t("task.delete")} ${thread.title}`}
+                    title={t("task.delete")}
+                    onClick={() => onDelete(thread.id)}
+                    data-no-drag
+                  >
+                    <Trash2 aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
       ) : null}
     </aside>
@@ -1687,6 +1784,10 @@ function TaskConversationPanel({
 }: TaskConversationPanelProps) {
   const { t } = useDesktopLocale();
   const entries = useMemo(() => visibleThreadEntries(detail), [detail]);
+  const activity = useMemo(
+    () => getBuildThreadActivity(activeThread, detail),
+    [activeThread, detail],
+  );
   const timelineItems = useMemo(
     () => mergeBuildThreadPresentationItems(entries.map((entry) => presentBuildThreadEntry(entry, t))),
     [entries, t],
@@ -1717,6 +1818,7 @@ function TaskConversationPanel({
                 onRepair={onRepairPreviewBlockedThread}
               />
             ) : null}
+            {activity ? <AgentActivityCallout activity={activity} /> : null}
             {activeThread.agentMode === "workspace-handoff" ? (
               <HandoffActionBar
                 disabled={isBusy}
@@ -1741,6 +1843,63 @@ function TaskConversationPanel({
           </div>
         )}
       </article>
+    </section>
+  );
+}
+
+interface AgentActivityCalloutProps {
+  activity: BuildThreadActivitySummary;
+}
+
+function AgentActivityCallout({ activity }: AgentActivityCalloutProps) {
+  const { locale, t } = useDesktopLocale();
+  const tone = activity.isStale ? "stale" : activity.isLongRunning ? "long" : "normal";
+  const statusCopy = activity.isStale
+    ? t("task.activity.stale", {
+        value: formatActivityDuration(activity.lastEventAgeMs ?? 0, locale),
+      })
+    : activity.isLongRunning
+      ? t("task.activity.longRunning", {
+          value: formatActivityDuration(activity.elapsedMs, locale),
+        })
+      : t("task.activity.active");
+  const stats = [
+    [t("task.activity.events"), formatCompactCount(activity.eventCount, locale)],
+    [t("task.activity.gateway"), formatCompactCount(activity.gatewayEventCount, locale)],
+    [t("task.activity.output"), formatOutputSize(activity.assistantChars, locale)],
+    [t("task.activity.files"), formatCompactCount(activity.fileEventCount, locale)],
+    [t("task.activity.tools"), formatCompactCount(activity.toolEventCount, locale)],
+  ];
+
+  return (
+    <section className={`agent-activity-callout agent-activity-callout--${tone}`} role="status">
+      <div className="agent-activity-callout__header">
+        <span className="agent-activity-callout__icon" aria-hidden="true">
+          <Terminal size={15} />
+        </span>
+        <div>
+          <strong>{t("task.activity.title")}</strong>
+          <small>
+            {activity.agentId}
+            {activity.transport ? ` · ${activity.transport}` : ""}
+          </small>
+        </div>
+      </div>
+      <p>{statusCopy}</p>
+      <div className="agent-activity-callout__stats">
+        {stats.map(([label, value]) => (
+          <span key={label}>
+            <b>{value}</b>
+            {label}
+          </span>
+        ))}
+      </div>
+      {activity.latestOutputPreview ? (
+        <div className="agent-activity-callout__latest">
+          <span>{t("task.activity.latest")}</span>
+          <code>{activity.latestOutputPreview}</code>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -1923,6 +2082,46 @@ function formatTimelineTime(timestamp: string, locale: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatActivityDuration(ms: number, locale: string): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  const zh = locale.startsWith("zh");
+  if (seconds < 60) {
+    return zh ? `${seconds} 秒` : `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return zh ? `${minutes} 分钟` : `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours < 24) {
+    if (remainingMinutes > 0) {
+      return zh ? `${hours} 小时 ${remainingMinutes} 分钟` : `${hours}h ${remainingMinutes}m`;
+    }
+    return zh ? `${hours} 小时` : `${hours}h`;
+  }
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  if (remainingHours > 0) {
+    return zh ? `${days} 天 ${remainingHours} 小时` : `${days}d ${remainingHours}h`;
+  }
+  return zh ? `${days} 天` : `${days}d`;
+}
+
+function formatCompactCount(value: number, locale: string): string {
+  return new Intl.NumberFormat(locale, {
+    notation: value >= 10_000 ? "compact" : "standard",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function formatOutputSize(chars: number, locale: string): string {
+  if (chars < 1000) {
+    return formatCompactCount(chars, locale);
+  }
+  return `${formatCompactCount(chars, locale)} chars`;
 }
 
 type ComposerMenuPlacement = "above" | "below";
@@ -2744,6 +2943,7 @@ interface WorkspaceListPanelProps {
   onPreviewWorkspace: (workspace: WorkspaceSummary) => void;
   onRepairWorkspacePreview: (workspace: WorkspaceSummary) => void;
   onModifyWorkspace: (workspace: WorkspaceSummary) => void;
+  onRenameWorkspace: (workspace: WorkspaceSummary, name: string) => void;
   onExportWorkspace: (workspace: WorkspaceSummary) => void;
   onReleaseWorkspace: (workspace: WorkspaceSummary) => void;
   onDeleteWorkspace: (workspace: WorkspaceSummary) => void;
@@ -2762,11 +2962,34 @@ function WorkspaceListPanel({
   onPreviewWorkspace,
   onRepairWorkspacePreview,
   onModifyWorkspace,
+  onRenameWorkspace,
   onExportWorkspace,
   onReleaseWorkspace,
   onDeleteWorkspace,
 }: WorkspaceListPanelProps) {
   const { locale, t } = useDesktopLocale();
+  const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+
+  const startRename = (workspace: WorkspaceSummary) => {
+    setEditingWorkspaceId(workspace.appId);
+    setRenameDraft(workspace.name);
+  };
+
+  const submitRename = (workspace: WorkspaceSummary) => {
+    const nextName = renameDraft.trim();
+    if (nextName && nextName !== workspace.name) {
+      onRenameWorkspace(workspace, nextName);
+    }
+    setEditingWorkspaceId(null);
+    setRenameDraft("");
+  };
+
+  const cancelRename = () => {
+    setEditingWorkspaceId(null);
+    setRenameDraft("");
+  };
+
   return (
     <section className="workspace-list" aria-label={t("workspace.aria")}>
       <div className="workspace-list__header">
@@ -2795,6 +3018,7 @@ function WorkspaceListPanel({
             const buildThread = getWorkspaceBuildThread(workspace, buildThreads);
             const canModify = canContinueBuildThread(buildThread);
             const isPreviewBlocked = buildThread?.status === "preview-blocked";
+            const isEditing = editingWorkspaceId === workspace.appId;
             const previewActionLabel = isPreviewBlocked
               ? t("workspace.fixPreview")
               : isPreviewing ? t("workspace.opening") : t("action.preview");
@@ -2810,7 +3034,37 @@ function WorkspaceListPanel({
                     {formatWorkspaceRuntimeBadge(workspace.mode)}
                   </span>
                   <div className="workspace-row__meta">
-                    <span>{workspace.name}</span>
+                    {isEditing ? (
+                      <form
+                        className="inline-rename workspace-row__rename"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          submitRename(workspace);
+                        }}
+                        data-no-drag
+                      >
+                        <input
+                          value={renameDraft}
+                          autoFocus
+                          maxLength={40}
+                          aria-label={t("workspace.rename")}
+                          onChange={(event) => setRenameDraft(event.target.value)}
+                        />
+                        <button type="submit" title={t("action.save")} aria-label={t("action.save")}>
+                          <Check aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          title={t("action.cancel")}
+                          aria-label={t("action.cancel")}
+                          onClick={cancelRename}
+                        >
+                          <X aria-hidden="true" />
+                        </button>
+                      </form>
+                    ) : (
+                      <span>{workspace.name}</span>
+                    )}
                     <small>
                       {formatWorkspaceRuntime(workspace.mode, t)} /{" "}
                       {isPreviewBlocked
@@ -2825,7 +3079,7 @@ function WorkspaceListPanel({
                       isPreviewing ? "is-active" : ""
                     } ${isPreviewBlocked ? "is-warning" : ""}`}
                     type="button"
-                    disabled={isBusy}
+                    disabled={isBusy || isEditing}
                     title={previewActionLabel}
                     aria-label={`${previewActionLabel} ${workspace.name}`}
                     onClick={() =>
@@ -2838,9 +3092,20 @@ function WorkspaceListPanel({
                     {isPreviewBlocked ? <Wrench aria-hidden="true" /> : <Eye aria-hidden="true" />}
                   </button>
                   <button
+                    className="workspace-icon-button workspace-row__rename-button"
+                    type="button"
+                    disabled={isBusy || isEditing}
+                    title={t("action.rename")}
+                    aria-label={`${t("workspace.rename")} ${workspace.name}`}
+                    onClick={() => startRename(workspace)}
+                    data-no-drag
+                  >
+                    <PencilLine aria-hidden="true" />
+                  </button>
+                  <button
                     className="workspace-icon-button workspace-row__modify"
                     type="button"
-                    disabled={isBusy || !canModify}
+                    disabled={isBusy || isEditing || !canModify}
                     title={canModify ? t("task.continue") : t("workspace.noThread")}
                     aria-label={`${t("task.continue")} ${workspace.name}`}
                     onClick={() => onModifyWorkspace(workspace)}
@@ -2853,7 +3118,7 @@ function WorkspaceListPanel({
                       isExporting ? "is-active" : ""
                     }`}
                     type="button"
-                    disabled={isBusy}
+                    disabled={isBusy || isEditing}
                     title={isExporting ? t("workspace.exporting") : t("action.export")}
                     aria-label={`${isExporting ? t("workspace.exporting") : t("action.export")} ${workspace.name}`}
                     onClick={() => onExportWorkspace(workspace)}
@@ -2866,7 +3131,7 @@ function WorkspaceListPanel({
                       isReleasing ? "is-active" : ""
                     }`}
                     type="button"
-                    disabled={isBusy}
+                    disabled={isBusy || isEditing}
                     title={isReleasing ? t("release.publishing", {}, "Publishing") : t("release.start", {}, "Publish")}
                     aria-label={`${isReleasing ? t("release.publishing", {}, "Publishing") : t("release.start", {}, "Publish")} ${workspace.name}`}
                     onClick={() => onReleaseWorkspace(workspace)}
@@ -2878,7 +3143,7 @@ function WorkspaceListPanel({
                   <button
                     className="workspace-icon-button workspace-row__delete"
                     type="button"
-                    disabled={isBusy}
+                    disabled={isBusy || isEditing}
                     title={t("action.delete")}
                     aria-label={`${t("action.delete")} ${workspace.name}`}
                     onClick={() => onDeleteWorkspace(workspace)}

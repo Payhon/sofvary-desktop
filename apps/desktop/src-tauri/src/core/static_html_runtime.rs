@@ -1,4 +1,6 @@
 use crate::core::harness_engine::{PromptEnvelope, STATIC_HTML_ALLOWED_FILES};
+#[cfg(test)]
+use crate::core::software_naming::suggest_software_name;
 use crate::core::workspace_types::AppBoxManifest;
 use crate::platform::current_adapter;
 #[cfg(test)]
@@ -80,11 +82,11 @@ impl StaticHtmlRuntime {
         let static_root = prepare_static_root(manifest)?;
 
         let title = if envelope.user_intent.trim().is_empty() {
-            "Sofvary Static App"
+            "Sofvary Static App".to_string()
         } else {
-            envelope.user_intent.trim()
+            suggest_software_name(&envelope.user_intent)
         };
-        let escaped_title = encode_text(title);
+        let escaped_title = encode_text(&title);
 
         fs::write(
             static_root.join("index.html"),
@@ -687,7 +689,8 @@ mod tests {
             fs::read_to_string(manifest.paths.generated_static.join("app.js")).expect("script");
         let generated = [index, style, script].join("\n");
 
-        assert!(generated.contains("Envelope Timer"));
+        assert!(generated.contains("Timer"));
+        assert!(!generated.contains("Envelope Timer"));
         for forbidden in [
             "FloatingCommandMenu",
             "BuildOverlay",
@@ -769,7 +772,8 @@ mod tests {
             .expect("write request");
         let response = read_http_response(stream);
         assert!(response.contains("200 OK"));
-        assert!(response.contains("HTTP test"));
+        assert!(response.contains("Http Test"));
+        assert!(!response.contains("HTTP test"));
         assert!(preview.preview_url.starts_with("http://127.0.0.1:"));
     }
 

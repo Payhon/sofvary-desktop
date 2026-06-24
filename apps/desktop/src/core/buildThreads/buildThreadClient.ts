@@ -40,6 +40,13 @@ export async function getBuildThread(threadId: string): Promise<BuildThreadDetai
   return safeInvoke<BuildThreadDetail>("get_build_thread", { threadId });
 }
 
+export async function renameBuildThread(
+  threadId: string,
+  title: string,
+): Promise<BuildThreadSummary> {
+  return safeInvoke<BuildThreadSummary>("rename_build_thread", { threadId, title });
+}
+
 export async function deleteBuildThread(threadId: string): Promise<void> {
   return safeInvoke<void>("delete_build_thread", { threadId });
 }

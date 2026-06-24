@@ -1,5 +1,6 @@
 use crate::core::agent_config::AgentInteractionMode;
 use crate::core::runtime_manager::{RuntimePreview, RuntimePreviewIssue};
+use crate::core::software_naming::{clean_display_name, suggest_software_name};
 use crate::core::workspace_types::{RuntimeKind, RuntimeMode};
 use crate::platform::{current_adapter, PlatformAdapter, PlatformError};
 use chrono::Utc;
@@ -109,6 +110,7 @@ pub struct CreateBuildThreadRequest {
 
 #[derive(Debug, Clone, Default)]
 pub struct BuildThreadUpdate {
+    pub title: Option<String>,
     pub status: Option<BuildThreadStatus>,
     pub workspace_id: Option<Option<String>>,
     pub app_id: Option<Option<String>>,
@@ -142,7 +144,7 @@ impl BuildThreadStore {
         let id = format!("build_{}", Uuid::new_v4());
         let summary = BuildThreadSummary {
             id: id.clone(),
-            title: request.title,
+            title: clean_thread_title(&request.title),
             status: BuildThreadStatus::Queued,
             workspace_id: None,
             app_id: None,
@@ -200,7 +202,15 @@ impl BuildThreadStore {
 
     pub fn get(&self, thread_id: &str) -> BuildThreadResult<BuildThreadDetail> {
         let adapter = current_adapter();
-        let path = thread_path(adapter.as_ref(), thread_id)?;
+        self.get_with_adapter(adapter.as_ref(), thread_id)
+    }
+
+    pub fn get_with_adapter(
+        &self,
+        adapter: &dyn PlatformAdapter,
+        thread_id: &str,
+    ) -> BuildThreadResult<BuildThreadDetail> {
+        let path = thread_path(adapter, thread_id)?;
         if !path.exists() {
             return Err(BuildThreadError::NotFound(thread_id.to_string()));
         }
@@ -260,6 +270,9 @@ impl BuildThreadStore {
             return Err(BuildThreadError::NotFound(thread_id.to_string()));
         }
         let mut detail = read_detail(&path)?;
+        if let Some(title) = update.title {
+            detail.summary.title = clean_thread_title(&title);
+        }
         if let Some(status) = update.status {
             if detail.summary.status == BuildThreadStatus::Canceled
                 && status != BuildThreadStatus::Canceled
@@ -372,18 +385,11 @@ impl BuildThreadStore {
 }
 
 pub fn build_thread_title(prompt: &str) -> String {
-    let trimmed = prompt.trim();
-    if trimmed.is_empty() {
-        return "Untitled build".to_string();
-    }
-    trimmed
-        .split_whitespace()
-        .take(8)
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(80)
-        .collect()
+    suggest_software_name(prompt)
+}
+
+pub fn clean_thread_title(title: &str) -> String {
+    clean_display_name(title, "Untitled App", 32)
 }
 
 fn read_detail(path: &PathBuf) -> BuildThreadResult<BuildThreadDetail> {
@@ -414,12 +420,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_thread_title_uses_prompt_prefix() {
+    fn build_thread_title_uses_short_software_name() {
         assert_eq!(
             build_thread_title("create a local countdown timer app"),
-            "create a local countdown timer app"
+            "Timer"
         );
-        assert_eq!(build_thread_title("  "), "Untitled build");
+        assert_eq!(
+            build_thread_title("生成一个排课管理软件，有学员名单管理，课程管理"),
+            "排课助手"
+        );
+        assert_eq!(build_thread_title("  "), "Untitled App");
+    }
+
+    #[test]
+    fn updates_thread_title_without_changing_entries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let adapter = TempAdapter {
+            data_dir: temp.path().join("data"),
+        };
+        let store = BuildThreadStore::new();
+        let thread = store
+            .create_with_adapter(
+                &adapter,
+                CreateBuildThreadRequest {
+                    title: "Initial".to_string(),
+                    prompt: "prompt".to_string(),
+                    runtime_kind: RuntimeKind::StaticHtml,
+                    runtime_mode: RuntimeMode::Dev,
+                    agent_id: "agent".to_string(),
+                    agent_mode: AgentInteractionMode::PiNative,
+                },
+            )
+            .expect("thread");
+
+        let updated = store
+            .update_with_adapter(
+                &adapter,
+                &thread.summary.id,
+                BuildThreadUpdate {
+                    title: Some("  Renamed Task  ".to_string()),
+                    ..BuildThreadUpdate::default()
+                },
+            )
+            .expect("rename");
+
+        assert_eq!(updated.title, "Renamed Task");
+        let detail = store
+            .get_with_adapter(&adapter, &thread.summary.id)
+            .expect("detail");
+        assert_eq!(detail.entries.len(), 1);
     }
 
     #[test]

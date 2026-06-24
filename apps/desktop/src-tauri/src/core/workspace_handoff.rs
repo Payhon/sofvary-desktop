@@ -6,6 +6,7 @@ use crate::core::harness_engine::{
 use crate::core::pack_manager::{PackError, PackManager};
 use crate::core::pack_types::{HarnessPackManifest, RuntimePackManifest};
 use crate::core::runtime_diagnostic::RuntimeDiagnostic;
+use crate::core::software_naming::suggest_software_name;
 use crate::core::workspace_handoff_prompt::{
     build_agents_md, build_claude_md, build_handoff_prompt, build_repair_prompt, build_tools_md,
 };
@@ -369,16 +370,7 @@ fn ensure_inside_workspace(workspace_root: &Path, path: &Path) -> WorkspaceHando
 }
 
 fn derive_handoff_workspace_name(requirement: &str) -> String {
-    let cleaned = requirement
-        .split_whitespace()
-        .take(6)
-        .collect::<Vec<_>>()
-        .join(" ");
-    if cleaned.is_empty() {
-        "Workspace Handoff App".to_string()
-    } else {
-        cleaned
-    }
+    suggest_software_name(requirement)
 }
 
 #[cfg(test)]

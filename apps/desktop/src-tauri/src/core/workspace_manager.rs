@@ -14,6 +14,7 @@ use crate::core::policy_engine::{PolicyEngine, PolicyError};
 use crate::core::policy_types::{
     PolicyApprovalSet, PolicyFileWriteRequest, PolicyWorkspaceLockfileUpdateRequest,
 };
+use crate::core::software_naming::clean_display_name;
 use crate::core::workspace_types::{
     AppBoxManifest, RuntimeKind, SnapshotSummary, SofvaryLockfile, WorkspaceConstraints,
     WorkspacePaths, WorkspacePreview, WorkspaceSummary,
@@ -250,6 +251,33 @@ impl WorkspaceManager {
     ) -> WorkspaceResult<AppBoxManifest> {
         let root = self.workspace_root_with_adapter(&app_id, adapter)?;
         self.read_manifest_at_root(&root)
+    }
+
+    pub fn rename_workspace(
+        &self,
+        app_id: String,
+        name: String,
+    ) -> WorkspaceResult<AppBoxManifest> {
+        let adapter = current_adapter();
+        self.rename_workspace_with_adapter(app_id, name, adapter.as_ref())
+    }
+
+    pub fn rename_workspace_with_adapter(
+        &self,
+        app_id: String,
+        name: String,
+        adapter: &dyn PlatformAdapter,
+    ) -> WorkspaceResult<AppBoxManifest> {
+        let root = self.workspace_root_with_adapter(&app_id, adapter)?;
+        if !root.exists() {
+            return Err(WorkspaceError::NotFound(app_id));
+        }
+
+        let mut manifest = self.read_manifest_at_root(&root)?;
+        manifest.name = clean_workspace_name(&name);
+        manifest.updated_at = Utc::now().to_rfc3339();
+        self.write_json(&manifest.paths.root.join("app.box.json"), &manifest)?;
+        Ok(manifest)
     }
 
     pub fn delete_workspace(&self, app_id: String) -> WorkspaceResult<AppBoxManifest> {
@@ -490,6 +518,135 @@ impl WorkspaceManager {
         }
 
         Ok(written)
+    }
+
+    pub fn write_generated_file_delta(
+        &self,
+        manifest: &AppBoxManifest,
+        runtime_kind: &str,
+        relative_path: &str,
+        contents: &str,
+        allowed_files: &[String],
+    ) -> WorkspaceResult<PathBuf> {
+        if !allowed_files.iter().any(|allowed| allowed == relative_path) {
+            return Err(WorkspaceError::InvalidManifest(format!(
+                "{runtime_kind} file '{relative_path}' is not allowed by the output contract"
+            )));
+        }
+
+        let manifest = self.validate_manifest_paths(manifest.clone(), &manifest.paths.root)?;
+        let (target_root, normalized_contents) = match runtime_kind {
+            "static-html" => {
+                validate_static_relative_file(relative_path)?;
+                (
+                    self.ensure_static_root_inside_workspace(&manifest)?,
+                    contents.to_string(),
+                )
+            }
+            "react-vite" => {
+                validate_react_relative_file(relative_path)?;
+                (
+                    self.ensure_react_root_inside_workspace(&manifest)?,
+                    contents.to_string(),
+                )
+            }
+            "react-sqlite" => {
+                validate_react_relative_file(relative_path)?;
+                if !relative_path.starts_with("react/") && !relative_path.starts_with("data/") {
+                    return Err(WorkspaceError::InvalidManifest(format!(
+                        "react-sqlite file '{relative_path}' must be under generated/react or generated/data"
+                    )));
+                }
+                let file = GeneratedReactSqliteFile {
+                    relative_path: relative_path.to_string(),
+                    contents: contents.to_string(),
+                };
+                (
+                    self.ensure_generated_root_inside_workspace(&manifest)?,
+                    normalized_react_sqlite_file_contents(&file)?,
+                )
+            }
+            "canvas2d" => {
+                validate_react_relative_file(relative_path)?;
+                let generated_root = self.ensure_generated_root_inside_workspace(&manifest)?;
+                (
+                    self.ensure_child(&generated_root, Path::new("canvas"))?,
+                    contents.to_string(),
+                )
+            }
+            "markdown-knowledge" => {
+                validate_generated_project_file_delta(
+                    relative_path,
+                    runtime_kind,
+                    &["markdown", "react"],
+                )?;
+                (
+                    self.ensure_generated_root_inside_workspace(&manifest)?,
+                    contents.to_string(),
+                )
+            }
+            "data-table" => {
+                validate_generated_project_file_delta(
+                    relative_path,
+                    runtime_kind,
+                    &["data", "react"],
+                )?;
+                (
+                    self.ensure_generated_root_inside_workspace(&manifest)?,
+                    contents.to_string(),
+                )
+            }
+            "file-processor" => {
+                validate_generated_project_file_delta(
+                    relative_path,
+                    runtime_kind,
+                    &["file-processor", "react"],
+                )?;
+                (
+                    self.ensure_generated_root_inside_workspace(&manifest)?,
+                    contents.to_string(),
+                )
+            }
+            "desktop-widget" => {
+                validate_generated_project_file_delta(
+                    relative_path,
+                    runtime_kind,
+                    &["widget", "react"],
+                )?;
+                (
+                    self.ensure_generated_root_inside_workspace(&manifest)?,
+                    contents.to_string(),
+                )
+            }
+            "ai-agent-app" => {
+                validate_generated_project_file_delta(
+                    relative_path,
+                    runtime_kind,
+                    &["ai", "react"],
+                )?;
+                (
+                    self.ensure_generated_root_inside_workspace(&manifest)?,
+                    contents.to_string(),
+                )
+            }
+            runtime_kind => {
+                return Err(WorkspaceError::InvalidManifest(format!(
+                    "unsupported runtime kind '{runtime_kind}'"
+                )));
+            }
+        };
+
+        fs::create_dir_all(&target_root)?;
+        let target = self.ensure_child(&target_root, Path::new(relative_path))?;
+        let parent = target.parent().ok_or_else(|| {
+            WorkspaceError::InvalidManifest(format!(
+                "{runtime_kind} file '{relative_path}' has no parent directory"
+            ))
+        })?;
+        fs::create_dir_all(parent)?;
+        self.enforce_file_write_policy(&manifest, &target)?;
+        fs::File::create(&target)?.write_all(normalized_contents.as_bytes())?;
+        Ok(target)
     }
 
     pub fn replace_generated_react_files(
@@ -1283,6 +1440,34 @@ fn validate_generated_project_file_set(
     Ok(())
 }
 
+fn validate_generated_project_file_delta(
+    relative_path: &str,
+    runtime_label: &str,
+    allowed_top_level_dirs: &[&str],
+) -> WorkspaceResult<()> {
+    validate_react_relative_file(relative_path)?;
+    let top_level: HashSet<&str> = allowed_top_level_dirs.iter().copied().collect();
+    let first_component = Path::new(relative_path)
+        .components()
+        .next()
+        .and_then(|component| match component {
+            std::path::Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            WorkspaceError::InvalidManifest(format!(
+                "{runtime_label} file '{relative_path}' has no top-level directory"
+            ))
+        })?;
+    if !top_level.contains(first_component) {
+        return Err(WorkspaceError::InvalidManifest(format!(
+            "{runtime_label} file '{relative_path}' must stay under one of {:?}",
+            allowed_top_level_dirs
+        )));
+    }
+    Ok(())
+}
+
 fn validate_react_relative_file(relative_path: &str) -> WorkspaceResult<()> {
     if relative_path.trim().is_empty() || relative_path.contains('\\') {
         return Err(WorkspaceError::InvalidManifest(format!(
@@ -1487,12 +1672,7 @@ fn harness_packs_for_runtime(runtime_kind: RuntimeKind) -> HashMap<String, Strin
 }
 
 fn clean_workspace_name(name: &str) -> String {
-    let trimmed = name.trim();
-    if trimmed.is_empty() {
-        "Untitled Sofvary App".to_string()
-    } else {
-        trimmed.chars().take(80).collect()
-    }
+    clean_display_name(name, "Untitled App", 40)
 }
 
 fn normalize_for_boundary(path: &Path) -> WorkspaceResult<PathBuf> {
@@ -1692,6 +1872,39 @@ mod tests {
                 .map(String::as_str),
             Some(STATIC_HTML_PACK_VERSION)
         );
+    }
+
+    #[test]
+    fn renames_workspace_manifest_without_moving_workspace_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let adapter = TempAdapter {
+            dirs: PlatformDirs {
+                data_dir: temp.path().join("data"),
+                cache_dir: temp.path().join("cache"),
+                config_dir: temp.path().join("config"),
+            },
+        };
+        let manager = WorkspaceManager::new();
+        let manifest = manager
+            .create_workspace_with_adapter("Original".to_string(), &adapter)
+            .expect("workspace");
+        let root = manifest.paths.root.clone();
+
+        let renamed = manager
+            .rename_workspace_with_adapter(
+                manifest.app_id.clone(),
+                "  排课助手  ".to_string(),
+                &adapter,
+            )
+            .expect("rename");
+
+        assert_eq!(renamed.name, "排课助手");
+        assert_eq!(renamed.paths.root, root);
+        let reloaded = manager
+            .get_workspace_with_adapter(manifest.app_id, &adapter)
+            .expect("reloaded");
+        assert_eq!(reloaded.name, "排课助手");
+        assert_eq!(reloaded.paths.root, root);
     }
 
     #[test]
@@ -2441,6 +2654,60 @@ mod tests {
             fs::read_to_string(manifest.paths.generated.join("data/app.sqlite")).expect("sqlite"),
             "stale"
         );
+    }
+
+    #[test]
+    fn writes_generated_file_delta_without_clearing_react_sqlite_workspace() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let adapter = TempAdapter {
+            dirs: PlatformDirs {
+                data_dir: temp.path().join("data"),
+                cache_dir: temp.path().join("cache"),
+                config_dir: temp.path().join("config"),
+            },
+        };
+        let manager = WorkspaceManager::new();
+        let manifest = manager
+            .create_workspace_for_runtime_with_adapter(
+                "SQLite Live Delta".to_string(),
+                RuntimeKind::ReactSqlite,
+                &adapter,
+            )
+            .expect("workspace");
+        fs::write(
+            manifest.paths.generated.join("data").join("app.sqlite"),
+            "runtime-db",
+        )
+        .expect("sqlite");
+
+        let target = manager
+            .write_generated_file_delta(
+                &manifest,
+                "react-sqlite",
+                "react/src/App.tsx",
+                "export function App() { return null; }\n",
+                &react_sqlite_allowed_files(),
+            )
+            .expect("delta");
+
+        assert!(target.ends_with("generated/react/src/App.tsx"));
+        assert_eq!(
+            fs::read_to_string(&target).expect("app"),
+            "export function App() { return null; }\n"
+        );
+        assert_eq!(
+            fs::read_to_string(manifest.paths.generated.join("data/app.sqlite")).expect("sqlite"),
+            "runtime-db"
+        );
+
+        let extra = manager.write_generated_file_delta(
+            &manifest,
+            "react-sqlite",
+            "react/src/extra.ts",
+            "extra",
+            &react_sqlite_allowed_files(),
+        );
+        assert!(matches!(extra, Err(WorkspaceError::InvalidManifest(_))));
     }
 
     #[test]

@@ -9,6 +9,7 @@ use crate::core::policy_types::{
     PolicyApprovalSet, PolicyCommandRequest, PolicyExternalAgentProcessRequest,
 };
 use crate::core::runtime_diagnostic::RuntimeDiagnostic;
+use crate::core::software_naming::suggest_software_name;
 use crate::core::workspace_manager::{
     GeneratedCanvas2dFile, GeneratedProjectFile, GeneratedReactFile, GeneratedReactSqliteFile,
     GeneratedStaticFile, WorkspaceError, WorkspaceManager,
@@ -57,6 +58,9 @@ pub struct AgentFileWriteRequest {
     pub contents: String,
 }
 
+pub type AgentLiveFileSink =
+    Arc<dyn Fn(AgentFileWriteRequest) -> AgentGatewayResult<()> + Send + Sync>;
+
 #[derive(Debug, Clone, Default)]
 pub struct AgentAdapterOutput {
     pub events: Vec<AgentEvent>,
@@ -64,20 +68,41 @@ pub struct AgentAdapterOutput {
     pub command_requests: Vec<CommandSpec>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct AgentRunContext {
     pub runtime_diagnostics: Vec<RuntimeDiagnostic>,
+    live_file_sink: Option<AgentLiveFileSink>,
+}
+
+impl std::fmt::Debug for AgentRunContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentRunContext")
+            .field("runtime_diagnostics", &self.runtime_diagnostics)
+            .field("live_file_sink", &self.live_file_sink.is_some())
+            .finish()
+    }
 }
 
 impl AgentRunContext {
     pub fn with_runtime_diagnostic(diagnostic: RuntimeDiagnostic) -> Self {
         Self {
             runtime_diagnostics: vec![diagnostic],
+            live_file_sink: None,
         }
     }
 
     pub fn diagnostics(&self) -> &[RuntimeDiagnostic] {
         &self.runtime_diagnostics
+    }
+
+    pub fn with_live_file_sink(mut self, sink: AgentLiveFileSink) -> Self {
+        self.live_file_sink = Some(sink);
+        self
+    }
+
+    pub fn live_file_sink(&self) -> Option<AgentLiveFileSink> {
+        self.live_file_sink.clone()
     }
 }
 
@@ -213,7 +238,17 @@ impl<A: AgentAdapter> AgentGateway<A> {
             adapter: adapter_kind,
         }];
 
-        let output = self.adapter.generate_with_context(envelope, context)?;
+        let live_context = context
+            .clone()
+            .with_live_file_sink(live_generated_file_sink(
+                *workspace_manager,
+                manifest.clone(),
+                envelope.runtime_policy.runtime_kind.clone(),
+                envelope.output_contract.files.clone(),
+            ));
+        let output = self
+            .adapter
+            .generate_with_context(envelope, &live_context)?;
         events.extend(output.events);
 
         match envelope.runtime_policy.runtime_kind.as_str() {
@@ -575,6 +610,7 @@ impl ConfiguredAgentAdapter {
             timeout_ms: self.timeout_ms,
             event_sink: self.event_sink.clone(),
             gateway_events: self.gateway_event_emitter.clone(),
+            live_file_sink: context.live_file_sink(),
         })?;
 
         Ok(AgentAdapterOutput {
@@ -732,6 +768,26 @@ fn generated_project_files(files: &[AgentFileWriteRequest]) -> Vec<GeneratedProj
         .collect()
 }
 
+fn live_generated_file_sink(
+    workspace_manager: WorkspaceManager,
+    manifest: AppBoxManifest,
+    runtime_kind: String,
+    allowed_files: Vec<String>,
+) -> AgentLiveFileSink {
+    Arc::new(move |file| {
+        workspace_manager
+            .write_generated_file_delta(
+                &manifest,
+                &runtime_kind,
+                &file.relative_path,
+                &file.contents,
+                &allowed_files,
+            )
+            .map(|_| ())
+            .map_err(AgentGatewayError::from)
+    })
+}
+
 fn staging_root_for_runtime(manifest: &AppBoxManifest, envelope: &PromptEnvelope) -> PathBuf {
     match envelope.runtime_policy.runtime_kind.as_str() {
         "static-html" => manifest.paths.generated_static.clone(),
@@ -744,13 +800,8 @@ fn staging_root_for_runtime(manifest: &AppBoxManifest, envelope: &PromptEnvelope
 }
 
 fn static_html_file_writes(envelope: &PromptEnvelope) -> Vec<AgentFileWriteRequest> {
-    let title = envelope.user_intent.trim();
-    let display_title = if title.is_empty() {
-        "Untitled Sofvary App"
-    } else {
-        title
-    };
-    let escaped_title = encode_text(display_title);
+    let display_title = project_title(envelope, "Untitled Sofvary App");
+    let escaped_title = encode_text(&display_title);
 
     vec![
         AgentFileWriteRequest {
@@ -862,14 +913,9 @@ if (statusNode) {
 fn react_vite_file_writes(
     envelope: &PromptEnvelope,
 ) -> AgentGatewayResult<Vec<AgentFileWriteRequest>> {
-    let title = envelope.user_intent.trim();
-    let display_title = if title.is_empty() {
-        "Task Board"
-    } else {
-        title
-    };
-    let escaped_title = encode_text(display_title);
-    let js_title = serde_json::to_string(display_title)
+    let display_title = project_title(envelope, "Task Board");
+    let escaped_title = encode_text(&display_title);
+    let js_title = serde_json::to_string(&display_title)
         .map_err(|error| AgentGatewayError::Adapter(error.to_string()))?;
 
     Ok(vec![
@@ -1163,14 +1209,9 @@ body {
 fn react_sqlite_file_writes(
     envelope: &PromptEnvelope,
 ) -> AgentGatewayResult<Vec<AgentFileWriteRequest>> {
-    let title = envelope.user_intent.trim();
-    let display_title = if title.is_empty() {
-        "Customer Manager"
-    } else {
-        title
-    };
-    let escaped_title = encode_text(display_title);
-    let js_title = serde_json::to_string(display_title)
+    let display_title = project_title(envelope, "Customer Manager");
+    let escaped_title = encode_text(&display_title);
+    let js_title = serde_json::to_string(&display_title)
         .map_err(|error| AgentGatewayError::Adapter(error.to_string()))?;
 
     Ok(vec![
@@ -2154,14 +2195,9 @@ export function ArtifactGallery({ jobs }: ArtifactGalleryProps) {
 fn canvas2d_file_writes(
     envelope: &PromptEnvelope,
 ) -> AgentGatewayResult<Vec<AgentFileWriteRequest>> {
-    let title = envelope.user_intent.trim();
-    let display_title = if title.is_empty() {
-        "Coin Field"
-    } else {
-        title
-    };
-    let escaped_title = encode_text(display_title);
-    let js_title = serde_json::to_string(display_title)
+    let display_title = project_title(envelope, "Coin Field");
+    let escaped_title = encode_text(&display_title);
+    let js_title = serde_json::to_string(&display_title)
         .map_err(|error| AgentGatewayError::Adapter(error.to_string()))?;
 
     Ok(vec![
@@ -3199,11 +3235,10 @@ export function DesktopWidgetApp({{ title = {js_title} }}: {{ title?: string }})
 }
 
 fn project_title(envelope: &PromptEnvelope, fallback: &str) -> String {
-    let title = envelope.user_intent.trim();
-    if title.is_empty() {
+    if envelope.user_intent.trim().is_empty() {
         fallback.to_string()
     } else {
-        title.to_string()
+        suggest_software_name(&envelope.user_intent)
     }
 }
 
@@ -3758,7 +3793,8 @@ mod tests {
 
         let index = std::fs::read_to_string(manifest.paths.generated_static.join("index.html"))
             .expect("index");
-        assert!(index.contains("Build a tiny notes app"));
+        assert!(index.contains("Tiny Notes"));
+        assert!(!index.contains("Build a tiny notes app"));
         assert!(!index.contains("floating command"));
         assert!(!index.contains("Sofvary UI"));
     }
@@ -3801,7 +3837,8 @@ mod tests {
         let board = std::fs::read_to_string(react_root.join("src/components/TaskBoard.tsx"))
             .expect("board");
         let generated = [app, board].join("\n");
-        assert!(generated.contains("Build a React task board"));
+        assert!(generated.contains("Task Board"));
+        assert!(!generated.contains("Build a React task board"));
         assert!(!generated.contains("FloatingCommandMenu"));
         assert!(!generated.contains("BuildOverlay"));
         assert!(!generated.contains("Sofvary UI"));
@@ -3902,7 +3939,8 @@ mod tests {
         let index = std::fs::read_to_string(canvas_root.join("index.html")).expect("index");
         let generated = [main, loop_js, index].join("\n");
 
-        assert!(generated.contains("Build a coin chase game"));
+        assert!(generated.contains("Coin Chase Game"));
+        assert!(!generated.contains("Build a coin chase game"));
         assert!(generated.contains("requestAnimationFrame"));
         assert!(generated.contains("getContext(\"2d\")"));
         assert!(!generated.contains("http://"));

@@ -39,6 +39,7 @@ pub mod runtime_environment;
 pub mod runtime_manager;
 pub mod runtime_selector;
 pub mod skill_registry;
+pub mod software_naming;
 pub mod static_html_runtime;
 pub mod workspace_handoff;
 pub mod workspace_handoff_prompt;

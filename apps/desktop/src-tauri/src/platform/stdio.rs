@@ -2,7 +2,7 @@ use crate::platform::process::validate_structured_process_spec;
 use crate::platform::types::{CommandSpec, PlatformError, PlatformResult};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
@@ -19,6 +19,8 @@ pub struct StdioJsonRpcProcess {
     child: Child,
     stdin: ChildStdin,
     stdout_rx: Receiver<std::io::Result<String>>,
+    stderr_rx: Receiver<std::io::Result<String>>,
+    stderr_lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -54,38 +56,18 @@ impl StdioJsonRpcProcess {
         let stderr = child.stderr.take();
 
         let (stdout_tx, stdout_rx) = mpsc::channel();
-        thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            loop {
-                let mut line = String::new();
-                match reader.read_line(&mut line) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        if stdout_tx
-                            .send(Ok(line.trim_end_matches(['\r', '\n']).to_string()))
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Err(error) => {
-                        let _ = stdout_tx.send(Err(error));
-                        break;
-                    }
-                }
-            }
-        });
-        if let Some(mut stderr) = stderr {
-            thread::spawn(move || {
-                let mut buffer = [0_u8; 8192];
-                while matches!(stderr.read(&mut buffer), Ok(count) if count > 0) {}
-            });
+        spawn_json_line_reader(stdout, stdout_tx);
+        let (stderr_tx, stderr_rx) = mpsc::channel();
+        if let Some(stderr) = stderr {
+            spawn_json_line_reader(stderr, stderr_tx);
         }
 
         Ok(Self {
             child,
             stdin,
             stdout_rx,
+            stderr_rx,
+            stderr_lines: Vec::new(),
         })
     }
 
@@ -103,6 +85,30 @@ impl StdioJsonRpcProcess {
             Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
             Err(mpsc::RecvTimeoutError::Disconnected) => Ok(None),
         }
+    }
+
+    pub fn drain_stderr(&mut self) -> PlatformResult<Vec<String>> {
+        let mut lines = Vec::new();
+        loop {
+            match self.stderr_rx.try_recv() {
+                Ok(Ok(line)) => {
+                    self.stderr_lines.push(line.clone());
+                    lines.push(line);
+                }
+                Ok(Err(error)) => return Err(PlatformError::Io(error)),
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+            }
+        }
+        Ok(lines)
+    }
+
+    pub fn recent_stderr(&mut self) -> PlatformResult<String> {
+        self.drain_stderr()?;
+        Ok(self.stderr_lines.join("\n"))
+    }
+
+    pub fn try_wait(&mut self) -> PlatformResult<Option<ExitStatus>> {
+        Ok(self.child.try_wait()?)
     }
 
     pub fn kill(&mut self) {
@@ -221,6 +227,31 @@ fn spawn_line_reader<R>(
     });
 }
 
+fn spawn_json_line_reader<R>(stream: R, line_tx: Sender<std::io::Result<String>>)
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stream);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let line = line.trim_end_matches(['\r', '\n']).to_string();
+                    if line_tx.send(Ok(line)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = line_tx.send(Err(error));
+                    break;
+                }
+            }
+        }
+    });
+}
+
 #[cfg(unix)]
 fn configure_process_tree_boundary(command: &mut Command) {
     command.process_group(0);
@@ -310,6 +341,37 @@ mod tests {
         assert!(saw_stdin);
     }
 
+    #[test]
+    fn stdio_json_rpc_process_keeps_stderr_after_exit() {
+        let spec = CommandSpec {
+            executable: test_shell_executable(),
+            args: test_shell_stderr_exit_args(),
+            cwd: std::env::current_dir().expect("cwd"),
+            env: HashMap::new(),
+            allowed_network: false,
+            timeout_ms: Some(5_000),
+            kill_on_drop: true,
+        };
+        let mut process = StdioJsonRpcProcess::spawn(&spec).expect("process");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut status = None;
+
+        while Instant::now() < deadline {
+            process.drain_stderr().expect("stderr");
+            status = process.try_wait().expect("wait");
+            if status.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        assert_eq!(status.and_then(|status| status.code()), Some(7));
+        assert!(process
+            .recent_stderr()
+            .expect("stderr")
+            .contains("json-rpc-boom"));
+    }
+
     #[cfg(windows)]
     fn test_shell_executable() -> PathBuf {
         PathBuf::from("cmd")
@@ -323,6 +385,14 @@ mod tests {
     #[cfg(windows)]
     fn test_shell_stdin_args() -> Vec<String> {
         vec!["/C".to_string(), "more".to_string()]
+    }
+
+    #[cfg(windows)]
+    fn test_shell_stderr_exit_args() -> Vec<String> {
+        vec![
+            "/C".to_string(),
+            "echo json-rpc-boom 1>&2 && exit /B 7".to_string(),
+        ]
     }
 
     #[cfg(unix)]
@@ -341,5 +411,13 @@ mod tests {
     #[cfg(unix)]
     fn test_shell_stdin_args() -> Vec<String> {
         vec!["-c".to_string(), "cat".to_string()]
+    }
+
+    #[cfg(unix)]
+    fn test_shell_stderr_exit_args() -> Vec<String> {
+        vec![
+            "-c".to_string(),
+            "printf 'json-rpc-boom\\n' >&2; exit 7".to_string(),
+        ]
     }
 }

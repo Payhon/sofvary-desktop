@@ -319,6 +319,7 @@ impl HarnessEngine {
                 harness_pack.id, harness_pack.version
             ),
         ];
+        append_software_naming_criteria(&mut acceptance_criteria, &manifest.name);
         apply_update_context_policy(
             &current_app_state,
             &mut harness_policy,
@@ -405,6 +406,7 @@ impl HarnessEngine {
                 harness_pack.id, harness_pack.version
             ),
         ];
+        append_software_naming_criteria(&mut acceptance_criteria, &manifest.name);
         apply_update_context_policy(
             &current_app_state,
             &mut harness_policy,
@@ -491,6 +493,7 @@ impl HarnessEngine {
                 harness_pack.id, harness_pack.version
             ),
         ];
+        append_software_naming_criteria(&mut acceptance_criteria, &manifest.name);
         apply_update_context_policy(
             &current_app_state,
             &mut harness_policy,
@@ -613,6 +616,7 @@ impl HarnessEngine {
                 harness_pack.id, harness_pack.version
             ),
         ];
+        append_software_naming_criteria(&mut acceptance_criteria, &manifest.name);
         apply_update_context_policy(
             &current_app_state,
             &mut harness_policy,
@@ -850,6 +854,7 @@ fn create_generated_project_envelope(
     )?;
     let mut harness_policy = spec.harness_policy;
     let mut acceptance_criteria = spec.acceptance_criteria;
+    append_software_naming_criteria(&mut acceptance_criteria, &manifest.name);
     apply_update_context_policy(
         &current_app_state,
         &mut harness_policy,
@@ -904,6 +909,19 @@ fn create_generated_project_envelope(
         },
         acceptance_criteria,
     })
+}
+
+fn append_software_naming_criteria(acceptance_criteria: &mut Vec<String>, fallback_name: &str) {
+    append_unique(
+        acceptance_criteria,
+        &[
+            format!(
+                "Before writing UI text, choose a concise software name. Use '{fallback_name}' unless you can derive a better short domain name from the user intent."
+            ),
+            "Visible app title and browser title must use the concise software name, not the full user requirement.".to_string(),
+            "Do not render PromptEnvelope text, runtime repair fallback text, diagnostic text, or Sofvary shell copy inside the generated app UI.".to_string(),
+        ],
+    );
 }
 
 fn build_current_app_state(

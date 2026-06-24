@@ -14,6 +14,9 @@ import {
 
 type Translator = (key: string, params?: Record<string, string | number | boolean | null | undefined>, fallback?: string) => string;
 
+const LONG_RUNNING_BUILD_MS = 10 * 60 * 1000;
+const STALE_BUILD_EVENT_MS = 60 * 1000;
+
 export function sortBuildThreads(threads: BuildThreadSummary[]): BuildThreadSummary[] {
   return [...threads].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
@@ -79,6 +82,104 @@ export function getWorkspaceBuildThread(
 
 export function visibleThreadEntries(detail: BuildThreadDetail | null): BuildThreadEntry[] {
   return mergeBuildThreadEntries(detail?.entries ?? []);
+}
+
+export interface BuildThreadActivitySummary {
+  eventCount: number;
+  gatewayEventCount: number;
+  assistantEntryCount: number;
+  assistantChars: number;
+  fileEventCount: number;
+  toolEventCount: number;
+  startedAt: string;
+  lastEventAt: string | null;
+  elapsedMs: number;
+  lastEventAgeMs: number | null;
+  latestOutputPreview: string | null;
+  transport: string | null;
+  agentId: string;
+  isLongRunning: boolean;
+  isStale: boolean;
+  hasGatewayEvents: boolean;
+}
+
+export function getBuildThreadActivity(
+  thread: BuildThreadSummary | null,
+  detail: BuildThreadDetail | null,
+  nowMs = Date.now(),
+): BuildThreadActivitySummary | null {
+  if (!thread) return null;
+
+  const entries = detail?.summary.id === thread.id ? detail.entries : [];
+  let gatewayEventCount = 0;
+  let assistantEntryCount = 0;
+  let assistantChars = 0;
+  let fileEventCount = 0;
+  let toolEventCount = 0;
+  let latestAssistant: BuildThreadEntry | null = null;
+  let transport: string | null = null;
+  let lastEventAt: string | null = null;
+  let lastEventMs = timestampMs(thread.updatedAt);
+
+  for (const entry of entries) {
+    const entryMs = timestampMs(entry.timestamp);
+    if (entryMs !== null && (lastEventMs === null || entryMs >= lastEventMs)) {
+      lastEventMs = entryMs;
+      lastEventAt = entry.timestamp;
+    }
+
+    const gatewayEvent = gatewayEventFromEntry(entry);
+    if (gatewayEvent) {
+      gatewayEventCount += 1;
+      transport = gatewayEvent.transport;
+      if (gatewayEvent.type === "message.delta" && entry.kind === "assistant") {
+        latestAssistant = entry;
+      }
+    }
+
+    if (entry.kind === "assistant") {
+      assistantEntryCount += 1;
+      assistantChars += entry.content.length;
+      latestAssistant = entry;
+    } else if (entry.kind === "file") {
+      fileEventCount += 1;
+    } else if (entry.kind === "tool") {
+      toolEventCount += 1;
+    }
+  }
+
+  if (!lastEventAt && lastEventMs !== null) {
+    lastEventAt = thread.updatedAt;
+  }
+
+  const startedMs = timestampMs(thread.createdAt) ?? nowMs;
+  const elapsedMs = Math.max(0, nowMs - startedMs);
+  const lastEventAgeMs = lastEventMs === null ? null : Math.max(0, nowMs - lastEventMs);
+  const isLive =
+    thread.status === "queued" ||
+    thread.status === "planning" ||
+    thread.status === "building" ||
+    thread.status === "repairing" ||
+    thread.status === "previewing";
+
+  return {
+    eventCount: entries.length,
+    gatewayEventCount,
+    assistantEntryCount,
+    assistantChars,
+    fileEventCount,
+    toolEventCount,
+    startedAt: thread.createdAt,
+    lastEventAt,
+    elapsedMs,
+    lastEventAgeMs,
+    latestOutputPreview: latestAssistant ? summarizeThreadEntryContent(latestAssistant, 220) : null,
+    transport,
+    agentId: thread.agentId,
+    isLongRunning: isLive && elapsedMs >= LONG_RUNNING_BUILD_MS,
+    isStale: isLive && lastEventAgeMs !== null && lastEventAgeMs >= STALE_BUILD_EVENT_MS,
+    hasGatewayEvents: gatewayEventCount > 0,
+  };
 }
 
 export function applyBuildThreadSummaryToDetail(
@@ -463,6 +564,12 @@ function formatGatewayStatusPhase(event: GatewayUniEvent, t: Translator): string
 function payloadString(event: GatewayUniEvent, key: string): string | null {
   const value = event.payload[key];
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function timestampMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 function normalizeThreadEntry(entry: BuildThreadEntry): BuildThreadEntry {

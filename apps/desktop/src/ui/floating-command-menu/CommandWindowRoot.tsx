@@ -60,6 +60,7 @@ import {
   listBuildThreads,
   openHandoffAgent,
   openHandoffWorkspace,
+  renameBuildThread,
   rescanHandoffWorkspace,
   retryBuildThreadPreview,
   startBuildThread,
@@ -145,7 +146,12 @@ import {
   formatUiThemePreference,
   getNextUiThemePreference,
 } from "../../core/uiSettings/uiSettingsLogic";
-import { deleteWorkspace, listWorkspaces, previewWorkspace } from "../../core/workspace/workspaceClient";
+import {
+  deleteWorkspace,
+  listWorkspaces,
+  previewWorkspace,
+  renameWorkspace,
+} from "../../core/workspace/workspaceClient";
 import { hideCommandWindow, minimizeCommandWindow, showMainWindow } from "../../platform/shellClient";
 import { emitShellEvent, listenShellEvent, type ShellEventName } from "../../platform/eventClient";
 import { useWindowDrag } from "../../platform/useWindowDrag";
@@ -988,6 +994,35 @@ export function CommandWindowRoot() {
     await selectBuildThread(thread.id);
   };
 
+  const renameExistingWorkspace = async (workspace: WorkspaceSummary, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === workspace.name) {
+      return;
+    }
+
+    try {
+      const manifest = await renameWorkspace(workspace, trimmed);
+      const updated: WorkspaceSummary = {
+        ...workspace,
+        name: manifest.name,
+        updatedAt: manifest.updatedAt,
+      };
+      setWorkspaces((current) =>
+        current.map((item) => (item.appId === workspace.appId ? updated : item)),
+      );
+      setActiveReleaseWorkspace((current) =>
+        current?.appId === workspace.appId ? { ...current, ...updated } : current,
+      );
+      setCapsuleStatus({ kind: "success", detail: `${manifest.name} renamed.` });
+      refreshWorkspaces();
+    } catch (error) {
+      setCapsuleStatus({
+        kind: "error",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const deleteExistingWorkspace = async (workspace: WorkspaceSummary) => {
     const confirmed = window.confirm(
       `Delete "${workspace.name}" and all related local files and records? This cannot be undone.`,
@@ -1660,6 +1695,21 @@ export function CommandWindowRoot() {
     }
   };
 
+  const renameThread = async (threadId: string, title: string) => {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    try {
+      const thread = await renameBuildThread(threadId, trimmed);
+      setBuildThreads((current) => upsertBuildThreadSummary(current, thread));
+      setActiveThreadDetail((current) =>
+        current?.summary.id === threadId ? { ...current, summary: thread } : current,
+      );
+      setAgentStatusOverride(`${thread.title} renamed.`);
+    } catch (error) {
+      setAgentStatusOverride(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const deleteThread = async (threadId: string) => {
     try {
       await deleteBuildThread(threadId);
@@ -1918,6 +1968,7 @@ export function CommandWindowRoot() {
           onStartNewBuildThreadDraft={startNewBuildThreadDraft}
           onContinueBuildThread={() => void continueActiveThread()}
           onCancelBuildThread={() => void cancelActiveThread()}
+          onRenameBuildThread={(threadId, title) => void renameThread(threadId, title)}
           onDeleteBuildThread={(threadId) => void deleteThread(threadId)}
           onRepairPreviewBlockedThread={(thread) => void repairPreviewBlockedThread(thread)}
           onCopyHandoffPrompt={() => void copyActiveHandoffPrompt()}
@@ -1957,6 +2008,7 @@ export function CommandWindowRoot() {
           onPreviewWorkspace={previewExistingWorkspace}
           onRepairWorkspacePreview={(workspace) => void repairPreviewBlockedWorkspace(workspace)}
           onModifyWorkspace={(workspace) => void modifyExistingWorkspace(workspace)}
+          onRenameWorkspace={(workspace, name) => void renameExistingWorkspace(workspace, name)}
           onExportWorkspace={exportWorkspace}
           onReleaseWorkspace={openReleaseWizard}
           onDeleteWorkspace={(workspace) => void deleteExistingWorkspace(workspace)}
