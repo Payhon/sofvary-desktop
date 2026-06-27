@@ -20,7 +20,10 @@
         "supported": true
       }
     },
-    "arch": ["x64", "arm64"]
+    "arch": [
+      "x64",
+      "arm64"
+    ]
   },
   "stack": {
     "frontend": "React",
@@ -39,7 +42,11 @@
   "commands": {
     "install": {
       "executable": "${sidecar:pnpm}",
-      "args": ["install", "--offline", "--ignore-scripts"],
+      "args": [
+        "install",
+        "--offline",
+        "--ignore-scripts"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "timeoutMs": 60000,
@@ -47,20 +54,71 @@
     },
     "dev": {
       "executable": "${sidecar:pnpm}",
-      "args": ["exec", "vite", "--host", "127.0.0.1", "--port", "${port}"],
+      "args": [
+        "exec",
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "${port}"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "killOnDrop": true
     },
     "build": {
       "executable": "${sidecar:pnpm}",
-      "args": ["run", "build"],
+      "args": [
+        "run",
+        "build"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "timeoutMs": 120000,
       "killOnDrop": true
     }
   },
-  "defaultHarness": ["sofvary.harness.markdown-knowledge"],
-  "integrity": {}
+  "defaultHarness": [
+    "sofvary.harness.markdown-knowledge"
+  ],
+  "integrity": {},
+  "executor": {
+    "kind": "react-project",
+    "allowedTopLevelDirs": [
+      "markdown",
+      "react"
+    ],
+    "clearRoots": [
+      "generated/markdown",
+      "generated/react"
+    ],
+    "contextRoot": "generated",
+    "requiredToolchains": [
+      "nodejs"
+    ]
+  },
+  "promptEnvelope": "prompt/envelope.json",
+  "selection": {
+    "softwareType": "Knowledge App",
+    "reason": "The request is about notes, markdown, documents, search, or a personal knowledge base.",
+    "signals": [
+      "markdown",
+      "notes",
+      "wiki",
+      "knowledge",
+      "document",
+      "reading",
+      "prompt library",
+      "笔记",
+      "知识库",
+      "文档",
+      "阅读",
+      "写作",
+      "提示词库",
+      "本地 wiki"
+    ],
+    "weight": 4,
+    "priority": 60
+  },
+  "builtin": true
 }

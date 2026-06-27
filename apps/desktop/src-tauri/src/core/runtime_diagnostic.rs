@@ -1,4 +1,3 @@
-use crate::core::file_processor_runtime::FileProcessorRuntimeError;
 use crate::core::react_project_runtime::ReactProjectRuntimeError;
 use crate::core::react_sqlite_runtime::ReactSqliteRuntimeError;
 use crate::core::react_vite_runtime::ReactViteRuntimeError;
@@ -208,7 +207,7 @@ pub fn diagnostic_from_react_sqlite_error(error: &ReactSqliteRuntimeError) -> Ru
             stderr,
             log_path,
         } => diagnostic_from_command_failure(
-            RuntimeKind::ReactSqlite,
+            "react-sqlite".to_string(),
             name,
             *status,
             stdout,
@@ -216,28 +215,28 @@ pub fn diagnostic_from_react_sqlite_error(error: &ReactSqliteRuntimeError) -> Ru
             Some(log_path.clone()),
         ),
         ReactSqliteRuntimeError::ApiNotReady(_) => generated_code_diagnostic(
-            RuntimeKind::ReactSqlite,
+            "react-sqlite".to_string(),
             RuntimeDiagnosticStage::Api,
             None,
             None,
         ),
         ReactSqliteRuntimeError::DevServerNotReady(_) => generated_code_diagnostic(
-            RuntimeKind::ReactSqlite,
+            "react-sqlite".to_string(),
             RuntimeDiagnosticStage::DevServer,
             None,
             None,
         ),
         ReactSqliteRuntimeError::InvalidPromptEnvelope(message) => generated_code_diagnostic(
-            RuntimeKind::ReactSqlite,
+            "react-sqlite".to_string(),
             RuntimeDiagnosticStage::WorkspaceValidation,
             None,
             Some(message),
         ),
         ReactSqliteRuntimeError::Policy(error) => {
-            policy_diagnostic(RuntimeKind::ReactSqlite, error.to_string())
+            policy_diagnostic("react-sqlite".to_string(), error.to_string())
         }
         ReactSqliteRuntimeError::MissingCommand { name, .. } => RuntimeDiagnostic {
-            runtime_kind: RuntimeKind::ReactSqlite,
+            runtime_kind: "react-sqlite".to_string(),
             stage: RuntimeDiagnosticStage::RuntimeStart,
             command_name: Some(name.clone()),
             status_code: None,
@@ -248,7 +247,7 @@ pub fn diagnostic_from_react_sqlite_error(error: &ReactSqliteRuntimeError) -> Ru
             repairable_by: RuntimeDiagnosticRepairTarget::Sofvary,
         },
         ReactSqliteRuntimeError::InvalidCommandSpec(message) => RuntimeDiagnostic {
-            runtime_kind: RuntimeKind::ReactSqlite,
+            runtime_kind: "react-sqlite".to_string(),
             stage: RuntimeDiagnosticStage::RuntimeStart,
             command_name: None,
             status_code: None,
@@ -259,7 +258,7 @@ pub fn diagnostic_from_react_sqlite_error(error: &ReactSqliteRuntimeError) -> Ru
             repairable_by: RuntimeDiagnosticRepairTarget::Sofvary,
         },
         ReactSqliteRuntimeError::Platform(error) => RuntimeDiagnostic {
-            runtime_kind: RuntimeKind::ReactSqlite,
+            runtime_kind: "react-sqlite".to_string(),
             stage: RuntimeDiagnosticStage::RuntimeStart,
             command_name: None,
             status_code: None,
@@ -270,7 +269,7 @@ pub fn diagnostic_from_react_sqlite_error(error: &ReactSqliteRuntimeError) -> Ru
             repairable_by: RuntimeDiagnosticRepairTarget::Sofvary,
         },
         ReactSqliteRuntimeError::Io(error) => RuntimeDiagnostic {
-            runtime_kind: RuntimeKind::ReactSqlite,
+            runtime_kind: "react-sqlite".to_string(),
             stage: RuntimeDiagnosticStage::RuntimeStart,
             command_name: None,
             status_code: None,
@@ -281,7 +280,7 @@ pub fn diagnostic_from_react_sqlite_error(error: &ReactSqliteRuntimeError) -> Ru
             repairable_by: RuntimeDiagnosticRepairTarget::Sofvary,
         },
         ReactSqliteRuntimeError::UnsupportedMode => RuntimeDiagnostic {
-            runtime_kind: RuntimeKind::ReactSqlite,
+            runtime_kind: "react-sqlite".to_string(),
             stage: RuntimeDiagnosticStage::RuntimeStart,
             command_name: None,
             status_code: None,
@@ -292,7 +291,7 @@ pub fn diagnostic_from_react_sqlite_error(error: &ReactSqliteRuntimeError) -> Ru
             repairable_by: RuntimeDiagnosticRepairTarget::Sofvary,
         },
         ReactSqliteRuntimeError::PathEscape => RuntimeDiagnostic {
-            runtime_kind: RuntimeKind::ReactSqlite,
+            runtime_kind: "react-sqlite".to_string(),
             stage: RuntimeDiagnosticStage::WorkspaceValidation,
             command_name: None,
             status_code: None,
@@ -337,41 +336,6 @@ pub fn diagnostic_from_react_project_error(
             status_code: None,
             stdout_tail: None,
             stderr_tail: Some("runtime path escaped the workspace boundary".to_string()),
-            log_path: None,
-            category: RuntimeDiagnosticCategory::Policy,
-            repairable_by: RuntimeDiagnosticRepairTarget::User,
-        },
-    }
-}
-
-pub fn diagnostic_from_file_processor_error(
-    error: &FileProcessorRuntimeError,
-) -> RuntimeDiagnostic {
-    match error {
-        FileProcessorRuntimeError::ReactProject(error) => {
-            diagnostic_from_react_project_error(RuntimeKind::FileProcessor, error)
-        }
-        FileProcessorRuntimeError::Io(error) => RuntimeDiagnostic {
-            runtime_kind: RuntimeKind::FileProcessor,
-            stage: RuntimeDiagnosticStage::RuntimeStart,
-            command_name: None,
-            status_code: None,
-            stdout_tail: None,
-            stderr_tail: Some(tail(&error.to_string(), OUTPUT_TAIL_LIMIT)),
-            log_path: None,
-            category: RuntimeDiagnosticCategory::RuntimeInfra,
-            repairable_by: RuntimeDiagnosticRepairTarget::Sofvary,
-        },
-        FileProcessorRuntimeError::UnselectedPath(_)
-        | FileProcessorRuntimeError::MissingDryRun
-        | FileProcessorRuntimeError::PathEscape(_)
-        | FileProcessorRuntimeError::InvalidPlan(_) => RuntimeDiagnostic {
-            runtime_kind: RuntimeKind::FileProcessor,
-            stage: RuntimeDiagnosticStage::Policy,
-            command_name: None,
-            status_code: None,
-            stdout_tail: None,
-            stderr_tail: Some(tail(&error.to_string(), OUTPUT_TAIL_LIMIT)),
             log_path: None,
             category: RuntimeDiagnosticCategory::Policy,
             repairable_by: RuntimeDiagnosticRepairTarget::User,
@@ -510,7 +474,7 @@ mod tests {
     #[test]
     fn install_offline_failure_is_environment_not_agent_repairable() {
         let diagnostic = diagnostic_from_command_failure(
-            RuntimeKind::ReactSqlite,
+            "react-sqlite".to_string(),
             "install",
             Some(1),
             "",
@@ -530,7 +494,7 @@ mod tests {
     #[test]
     fn install_package_manifest_failure_is_agent_repairable_generated_code() {
         let diagnostic = diagnostic_from_command_failure(
-            RuntimeKind::ReactVite,
+            "react-vite".to_string(),
             "install",
             Some(1),
             "",
@@ -553,7 +517,7 @@ mod tests {
     #[test]
     fn install_dependency_version_resolution_failure_is_agent_repairable_generated_code() {
         let diagnostic = diagnostic_from_command_failure(
-            RuntimeKind::ReactVite,
+            "react-vite".to_string(),
             "install",
             Some(1),
             "",
@@ -576,7 +540,7 @@ mod tests {
     #[test]
     fn install_network_fetch_failure_is_environment_not_agent_repairable() {
         let diagnostic = diagnostic_from_command_failure(
-            RuntimeKind::ReactVite,
+            "react-vite".to_string(),
             "install",
             Some(1),
             "",
@@ -596,7 +560,7 @@ mod tests {
     #[test]
     fn runtime_start_sidecar_failure_summary_names_managed_toolchain() {
         let diagnostic = RuntimeDiagnostic {
-            runtime_kind: RuntimeKind::ReactSqlite,
+            runtime_kind: "react-sqlite".to_string(),
             stage: RuntimeDiagnosticStage::RuntimeStart,
             command_name: None,
             status_code: None,
@@ -619,7 +583,7 @@ mod tests {
     #[test]
     fn build_failure_is_agent_repairable_generated_code() {
         let diagnostic = diagnostic_from_command_failure(
-            RuntimeKind::ReactVite,
+            "react-vite".to_string(),
             "build",
             Some(2),
             "",
@@ -659,7 +623,7 @@ mod tests {
     #[test]
     fn policy_failure_requires_user_confirmation() {
         let diagnostic = diagnostic_from_react_vite_error(
-            RuntimeKind::ReactVite,
+            "react-vite".to_string(),
             &ReactViteRuntimeError::Policy(
                 crate::core::policy_engine::PolicyError::RequiresConfirmation {
                     action: crate::core::policy_types::PolicyActionKind::DependencyInstall,

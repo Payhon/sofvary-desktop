@@ -20,22 +20,13 @@
         "supported": true
       }
     },
-    "arch": ["x64", "arm64"]
-  },
-  "runtime": "sofvary.runtime.static-html",
-  "instructions": {
-    "system": [
-      "Generate a self-contained static app using index.html, style.css, and app.js.",
-      "Do not require npm, CDNs, remote scripts, or external assets."
-    ],
-    "fileSystemPolicy": [
-      "Write only inside generated/static for this runtime.",
-      "Do not read or write paths outside the active Sofvary workspace."
-    ],
-    "outputRules": [
-      "Keep Sofvary shell UI out of generated app source.",
-      "The app must run through the local static preview server."
+    "arch": [
+      "x64",
+      "arm64"
     ]
   },
-  "integrity": {}
+  "runtime": "sofvary.runtime.static-html",
+  "integrity": {},
+  "promptPolicy": "prompt/policy.json",
+  "builtin": true
 }

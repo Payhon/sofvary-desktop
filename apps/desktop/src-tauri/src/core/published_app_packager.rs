@@ -1032,9 +1032,7 @@ impl IfEmpty for String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::workspace_types::{
-        RuntimeKind, WorkspaceConstraints, WorkspacePaths, WorkspacePreview,
-    };
+    use crate::core::workspace_types::{WorkspaceConstraints, WorkspacePaths, WorkspacePreview};
     use std::collections::HashMap;
 
     #[test]
@@ -1063,6 +1061,7 @@ mod tests {
                 runtime_packs: HashMap::new(),
                 harness_packs: HashMap::new(),
                 plugin_packs: HashMap::new(),
+                pack_sources: HashMap::new(),
                 agent_adapter: "mock".to_string(),
             },
             app_name: "CRM".to_string(),
@@ -1411,7 +1410,7 @@ mod tests {
         AppBoxManifest {
             app_id: "app_test".to_string(),
             name: "Test".to_string(),
-            mode: RuntimeKind::ReactSqlite,
+            mode: "react-sqlite".to_string(),
             created_at: "now".to_string(),
             updated_at: "now".to_string(),
             stack: vec!["React".to_string()],

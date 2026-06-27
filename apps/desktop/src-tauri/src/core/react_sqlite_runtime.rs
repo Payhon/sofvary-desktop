@@ -1,4 +1,4 @@
-use crate::core::harness_engine::{PromptEnvelope, REACT_SQLITE_ALLOWED_FILES};
+use crate::core::harness_engine::PromptEnvelope;
 use crate::core::pack_types::{PackCommandSpec, RuntimePackManifest};
 use crate::core::policy_engine::{PolicyEngine, PolicyError};
 use crate::core::policy_types::{PolicyApprovalSet, PolicyCommandRequest};
@@ -620,35 +620,54 @@ fn validate_prompt_envelope(envelope: &PromptEnvelope) -> Result<(), ReactSqlite
             envelope.output_contract.format
         )));
     }
-    ensure_exact_react_sqlite_files(
-        "fileSystemPolicy.allowedFiles",
-        &envelope.file_system_policy.allowed_files,
-    )?;
-    ensure_exact_react_sqlite_files("outputContract.files", &envelope.output_contract.files)?;
+    ensure_allowed_files_match_output_contract(envelope)?;
 
     Ok(())
 }
 
-fn ensure_exact_react_sqlite_files(
-    field: &str,
-    files: &[String],
+fn ensure_allowed_files_match_output_contract(
+    envelope: &PromptEnvelope,
 ) -> Result<(), ReactSqliteRuntimeError> {
-    let expected: HashSet<&str> = REACT_SQLITE_ALLOWED_FILES.iter().copied().collect();
-    let actual: HashSet<&str> = files.iter().map(String::as_str).collect();
-    if expected == actual && files.len() == REACT_SQLITE_ALLOWED_FILES.len() {
-        Ok(())
-    } else {
-        Err(ReactSqliteRuntimeError::InvalidPromptEnvelope(format!(
-            "{field} must contain exactly the React + SQLite project file set"
-        )))
+    if envelope.file_system_policy.allowed_files.is_empty() {
+        return Err(ReactSqliteRuntimeError::InvalidPromptEnvelope(
+            "react-sqlite output contract must declare at least one allowed file".to_string(),
+        ));
     }
+
+    for file in envelope
+        .file_system_policy
+        .allowed_files
+        .iter()
+        .chain(envelope.output_contract.files.iter())
+    {
+        validate_relative_contract_file(file)?;
+    }
+
+    let expected: HashSet<&str> = envelope
+        .file_system_policy
+        .allowed_files
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let actual: HashSet<&str> = envelope
+        .output_contract
+        .files
+        .iter()
+        .map(String::as_str)
+        .collect();
+    if expected == actual && expected.len() == envelope.output_contract.files.len() {
+        return Ok(());
+    }
+
+    Err(ReactSqliteRuntimeError::InvalidPromptEnvelope(
+        "fileSystemPolicy.allowedFiles and outputContract.files must match".to_string(),
+    ))
 }
 
 fn ensure_exact_workspace_react_sqlite_files(
     manifest: &AppBoxManifest,
     allowed_files: &[String],
 ) -> Result<(), ReactSqliteRuntimeError> {
-    ensure_exact_react_sqlite_files("workspace.generated", allowed_files)?;
     let generated_root = prepare_generated_root(manifest)?;
     let expected: HashSet<String> = allowed_files.iter().cloned().collect();
     let mut actual = HashSet::new();
@@ -695,6 +714,29 @@ fn collect_relative_files<'a>(
                 .map_err(|_| ReactSqliteRuntimeError::PathEscape)?;
             files.insert(relative.to_string_lossy().replace('\\', "/"));
         }
+    }
+    Ok(())
+}
+
+fn validate_relative_contract_file(path: &str) -> Result<(), ReactSqliteRuntimeError> {
+    if path.trim().is_empty()
+        || path.contains('\\')
+        || path.starts_with('/')
+        || path
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "..")
+        || Path::new(path).components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(ReactSqliteRuntimeError::InvalidPromptEnvelope(format!(
+            "output contract file path must stay relative inside generated: {path}"
+        )));
     }
     Ok(())
 }
@@ -866,9 +908,7 @@ fn request_http(url: &str, address: &str) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::core::harness_engine::PromptEnvelope;
-    use crate::core::workspace_types::{
-        RuntimeKind, WorkspaceConstraints, WorkspacePaths, WorkspacePreview,
-    };
+    use crate::core::workspace_types::{WorkspaceConstraints, WorkspacePaths, WorkspacePreview};
 
     #[test]
     fn validates_react_sqlite_prompt_envelope_fixture() {
@@ -976,8 +1016,8 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let manifest = test_manifest(temp.path());
         write_allowed_files(&manifest);
-        let allowed = REACT_SQLITE_ALLOWED_FILES
-            .iter()
+        let allowed = react_sqlite_test_files()
+            .into_iter()
             .map(|value| value.to_string())
             .collect::<Vec<_>>();
 
@@ -990,8 +1030,8 @@ mod tests {
         let manifest = test_manifest(temp.path());
         write_allowed_files(&manifest);
         fs::write(manifest.paths.generated.join("data/app.sqlite"), "sqlite").expect("sqlite");
-        let allowed = REACT_SQLITE_ALLOWED_FILES
-            .iter()
+        let allowed = react_sqlite_test_files()
+            .into_iter()
             .map(|value| value.to_string())
             .collect::<Vec<_>>();
 
@@ -1018,8 +1058,8 @@ mod tests {
         let vite_cache = manifest.paths.generated.join("react/.vite/deps/react.js");
         fs::create_dir_all(vite_cache.parent().expect("vite cache parent")).expect("vite cache");
         fs::write(vite_cache, "cache").expect("vite cache file");
-        let allowed = REACT_SQLITE_ALLOWED_FILES
-            .iter()
+        let allowed = react_sqlite_test_files()
+            .into_iter()
             .map(|value| value.to_string())
             .collect::<Vec<_>>();
 
@@ -1047,8 +1087,8 @@ mod tests {
         assert!(index.contains("lastInsertRowid") || index.contains("statement.run"));
         assert!(types.contains("declare class Database"));
 
-        let allowed = REACT_SQLITE_ALLOWED_FILES
-            .iter()
+        let allowed = react_sqlite_test_files()
+            .into_iter()
             .map(|value| value.to_string())
             .collect::<Vec<_>>();
         write_allowed_files(&manifest);
@@ -1062,8 +1102,8 @@ mod tests {
         let manifest = test_manifest(temp.path());
         write_allowed_files(&manifest);
         fs::write(manifest.paths.generated.join("data/extra.sql"), "extra").expect("extra");
-        let allowed = REACT_SQLITE_ALLOWED_FILES
-            .iter()
+        let allowed = react_sqlite_test_files()
+            .into_iter()
             .map(|value| value.to_string())
             .collect::<Vec<_>>();
 
@@ -1087,7 +1127,7 @@ mod tests {
         AppBoxManifest {
             app_id: "app_test".to_string(),
             name: "Test".to_string(),
-            mode: RuntimeKind::ReactSqlite,
+            mode: "react-sqlite".to_string(),
             created_at: "now".to_string(),
             updated_at: "now".to_string(),
             stack: vec![],
@@ -1111,10 +1151,29 @@ mod tests {
     }
 
     fn write_allowed_files(manifest: &AppBoxManifest) {
-        for relative_path in REACT_SQLITE_ALLOWED_FILES {
+        for relative_path in react_sqlite_test_files() {
             let target = manifest.paths.generated.join(relative_path);
             fs::create_dir_all(target.parent().expect("parent")).expect("parent dir");
             fs::write(target, format!("file: {relative_path}")).expect("file");
         }
+    }
+
+    fn react_sqlite_test_files() -> Vec<&'static str> {
+        vec![
+            "react/package.json",
+            "react/index.html",
+            "react/vite.config.ts",
+            "react/tsconfig.json",
+            "react/src/main.tsx",
+            "react/src/App.tsx",
+            "react/src/components/CustomerManager.tsx",
+            "react/src/styles/app.css",
+            "react/server/index.ts",
+            "react/server/db.ts",
+            "react/server/routes/customers.ts",
+            "data/schema.json",
+            "data/migrations/001_create_customers.sql",
+            "data/seed.sql",
+        ]
     }
 }

@@ -20,7 +20,10 @@
         "supported": true
       }
     },
-    "arch": ["x64", "arm64"]
+    "arch": [
+      "x64",
+      "arm64"
+    ]
   },
   "stack": {
     "frontend": "React",
@@ -39,7 +42,11 @@
   "commands": {
     "install": {
       "executable": "${sidecar:pnpm}",
-      "args": ["install", "--offline", "--ignore-scripts"],
+      "args": [
+        "install",
+        "--offline",
+        "--ignore-scripts"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "timeoutMs": 60000,
@@ -47,20 +54,69 @@
     },
     "dev": {
       "executable": "${sidecar:pnpm}",
-      "args": ["exec", "vite", "--host", "127.0.0.1", "--port", "${port}"],
+      "args": [
+        "exec",
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "${port}"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "killOnDrop": true
     },
     "build": {
       "executable": "${sidecar:pnpm}",
-      "args": ["run", "build"],
+      "args": [
+        "run",
+        "build"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "timeoutMs": 120000,
       "killOnDrop": true
     }
   },
-  "defaultHarness": ["sofvary.harness.file-processor"],
-  "integrity": {}
+  "defaultHarness": [
+    "sofvary.harness.file-processor"
+  ],
+  "integrity": {},
+  "executor": {
+    "kind": "react-project",
+    "allowedTopLevelDirs": [
+      "file-processor",
+      "react"
+    ],
+    "clearRoots": [
+      "generated/file-processor",
+      "generated/react"
+    ],
+    "contextRoot": "generated",
+    "requiredToolchains": [
+      "nodejs"
+    ]
+  },
+  "promptEnvelope": "prompt/envelope.json",
+  "selection": {
+    "softwareType": "File Processor",
+    "reason": "The request is about explicit local files, batch operations, or safe dry-run processing.",
+    "signals": [
+      "batch rename",
+      "rename files",
+      "folder",
+      "files",
+      "file processor",
+      "organize images",
+      "批量重命名",
+      "重命名",
+      "文件处理",
+      "整理文件",
+      "文件夹",
+      "图片整理"
+    ],
+    "weight": 5,
+    "priority": 65
+  },
+  "builtin": true
 }

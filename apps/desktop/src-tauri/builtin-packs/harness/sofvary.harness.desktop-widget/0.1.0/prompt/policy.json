@@ -1,0 +1,17 @@
+{
+  "systemInstructions": [
+    "Generate a compact React desktop widget app that runs inside the main Sofvary preview.",
+    "Do not create transparent, always-on-top, tray, notification, or system automation behavior."
+  ],
+  "fileSystemRules": [
+    "Write React UI files only inside generated/react.",
+    "Write widget metadata only inside generated/widget.",
+    "Do not read or write paths outside the active Sofvary workspace."
+  ],
+  "outputRules": [
+    "Keep the widget layout compact.",
+    "Avoid unauthorized system APIs.",
+    "Keep Sofvary shell UI out of generated app source."
+  ],
+  "blockedCapabilities": []
+}

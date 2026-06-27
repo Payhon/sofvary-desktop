@@ -20,31 +20,27 @@
         "supported": true
       }
     },
-    "arch": ["x64", "arm64"]
+    "arch": [
+      "x64",
+      "arm64"
+    ]
   },
   "runtime": "sofvary.runtime.ai-agent-app",
   "softwareSpecies": {
     "id": "novel-agent",
     "name": "Novel Agent",
     "description": "A provider-bound fiction studio for premise, outline, characters, chapters, and continuity passes.",
-    "runtimeKinds": ["ai-agent-app"],
-    "tags": ["agent", "writing", "novel", "text"]
-  },
-  "instructions": {
-    "system": [
-      "Generate an AI Agent App focused on fiction planning, chapter drafting, character notes, and continuity review.",
-      "Use only text-capable provider requirements through the Sofvary AI Gateway."
+    "runtimeKinds": [
+      "ai-agent-app"
     ],
-    "fileSystemPolicy": [
-      "Write provider requirement metadata only inside generated/ai.",
-      "Write React UI files only inside generated/react.",
-      "Do not read arbitrary user manuscripts outside the active workspace."
-    ],
-    "outputRules": [
-      "Show provider binding status without displaying API keys or secure refs.",
-      "Send novel generation requests only to the local Sofvary AI Gateway.",
-      "Keep story artifacts workspace-local and export-clean."
+    "tags": [
+      "agent",
+      "writing",
+      "novel",
+      "text"
     ]
   },
-  "integrity": {}
+  "integrity": {},
+  "promptPolicy": "prompt/policy.json",
+  "builtin": true
 }

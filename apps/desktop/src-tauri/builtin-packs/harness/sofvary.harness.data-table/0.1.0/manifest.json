@@ -20,24 +20,13 @@
         "supported": true
       }
     },
-    "arch": ["x64", "arm64"]
-  },
-  "runtime": "sofvary.runtime.data-table",
-  "instructions": {
-    "system": [
-      "Generate a React + Vite personal data table app using workspace-local JSON data.",
-      "Do not upload table data or access arbitrary CSV files."
-    ],
-    "fileSystemPolicy": [
-      "Write React UI files only inside generated/react.",
-      "Write table schema and data only inside generated/data.",
-      "CSV import must require an explicit user-selected file."
-    ],
-    "outputRules": [
-      "Tables support add, edit, delete, search, filter, and sort where relevant.",
-      "CSV import remains a safe placeholder until file selection is implemented.",
-      "Keep Sofvary shell UI out of generated app source."
+    "arch": [
+      "x64",
+      "arm64"
     ]
   },
-  "integrity": {}
+  "runtime": "sofvary.runtime.data-table",
+  "integrity": {},
+  "promptPolicy": "prompt/policy.json",
+  "builtin": true
 }

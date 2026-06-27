@@ -20,7 +20,10 @@
         "supported": true
       }
     },
-    "arch": ["x64", "arm64"]
+    "arch": [
+      "x64",
+      "arm64"
+    ]
   },
   "stack": {
     "frontend": "HTML",
@@ -37,6 +40,40 @@
     "network": "local-only"
   },
   "commands": {},
-  "defaultHarness": ["sofvary.harness.static-html"],
-  "integrity": {}
+  "defaultHarness": [
+    "sofvary.harness.static-html"
+  ],
+  "integrity": {},
+  "executor": {
+    "kind": "static-html",
+    "allowedTopLevelDirs": [
+      "static"
+    ],
+    "clearRoots": [
+      "generated/static"
+    ],
+    "contextRoot": "generated/static",
+    "requiredToolchains": []
+  },
+  "promptEnvelope": "prompt/envelope.json",
+  "selection": {
+    "softwareType": "Lightweight Page Tool",
+    "reason": "The request can be served as a small single-page tool without package installation or local data services.",
+    "signals": [
+      "landing page",
+      "single page",
+      "calculator",
+      "simple tool",
+      "static",
+      "页面",
+      "单页",
+      "计算器",
+      "轻量",
+      "简单工具",
+      "静态"
+    ],
+    "weight": 2,
+    "priority": 10
+  },
+  "builtin": true
 }

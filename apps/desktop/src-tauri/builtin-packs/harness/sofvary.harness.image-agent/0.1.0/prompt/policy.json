@@ -1,0 +1,17 @@
+{
+  "systemInstructions": [
+    "Generate an AI Agent App focused on image prompt design, generation jobs, status tracking, and artifact review.",
+    "Use only image-capable provider requirements through the Sofvary AI Gateway."
+  ],
+  "fileSystemRules": [
+    "Write provider requirement metadata only inside generated/ai.",
+    "Write React UI files only inside generated/react.",
+    "Store generated image references as workspace-local artifact metadata only."
+  ],
+  "outputRules": [
+    "Show provider binding status without displaying API keys or secure refs.",
+    "Send image generation requests only to the local Sofvary AI Gateway.",
+    "Do not embed provider credentials or remote provider URLs in generated source."
+  ],
+  "blockedCapabilities": []
+}

@@ -1,4 +1,4 @@
-use crate::core::harness_engine::{PromptEnvelope, CANVAS2D_ALLOWED_FILES};
+use crate::core::harness_engine::PromptEnvelope;
 use crate::core::workspace_types::AppBoxManifest;
 use crate::platform::current_adapter;
 use serde::{Deserialize, Serialize};
@@ -74,7 +74,7 @@ impl Canvas2dRuntime {
     ) -> Result<Canvas2dRuntimeServer, Canvas2dRuntimeError> {
         self.validate_prompt_envelope(envelope)?;
         ensure_exact_workspace_canvas2d_files(manifest, &envelope.output_contract.files)?;
-        self.start_workspace(manifest)
+        self.start_workspace_with_allowed_files(manifest, envelope.output_contract.files.clone())
     }
 
     pub fn validate_prompt_envelope(
@@ -88,6 +88,16 @@ impl Canvas2dRuntime {
         &self,
         manifest: &AppBoxManifest,
     ) -> Result<Canvas2dRuntimeServer, Canvas2dRuntimeError> {
+        let canvas_root = prepare_canvas_root(manifest)?;
+        let allowed_files = list_relative_files(&canvas_root)?;
+        self.start_workspace_with_allowed_files(manifest, allowed_files)
+    }
+
+    fn start_workspace_with_allowed_files(
+        &self,
+        manifest: &AppBoxManifest,
+        allowed_files: Vec<String>,
+    ) -> Result<Canvas2dRuntimeServer, Canvas2dRuntimeError> {
         let adapter = current_adapter();
         let port = adapter.allocate_local_port()?;
         let bind_addr = ("127.0.0.1", port);
@@ -95,6 +105,7 @@ impl Canvas2dRuntime {
         listener.set_nonblocking(true)?;
         let canvas_root = prepare_canvas_root(manifest)?;
         let served_root = canvas_root.clone();
+        let served_allowed_files = Arc::new(allowed_files);
         let app_id = manifest.app_id.clone();
         let stop_requested = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop_requested);
@@ -103,7 +114,7 @@ impl Canvas2dRuntime {
             while !thread_stop.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        let _ = handle_connection(stream, &served_root);
+                        let _ = handle_connection(stream, &served_root, &served_allowed_files);
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(25));
@@ -133,6 +144,7 @@ impl Canvas2dRuntime {
 fn handle_connection(
     mut stream: TcpStream,
     canvas_root: &Path,
+    allowed_files: &[String],
 ) -> Result<(), Canvas2dRuntimeError> {
     let mut buffer = [0_u8; 2048];
     let bytes = stream.read(&mut buffer)?;
@@ -143,7 +155,7 @@ fn handle_connection(
         .and_then(|line| line.split_whitespace().nth(1))
         .unwrap_or("/");
 
-    let file_path = match resolve_canvas_path(canvas_root, path) {
+    let file_path = match resolve_canvas_path(canvas_root, path, allowed_files) {
         Ok(path) => path,
         Err(Canvas2dRuntimeError::PathEscape) => {
             write_response(
@@ -195,6 +207,7 @@ fn write_response(
 fn resolve_canvas_path(
     canvas_root: &Path,
     request_path: &str,
+    allowed_files: &[String],
 ) -> Result<PathBuf, Canvas2dRuntimeError> {
     let path_without_query = request_path.split('?').next().unwrap_or("/");
     let relative = path_without_query.trim_start_matches('/');
@@ -214,9 +227,9 @@ fn resolve_canvas_path(
     }
 
     let relative_name = relative.to_string_lossy();
-    if !CANVAS2D_ALLOWED_FILES
+    if !allowed_files
         .iter()
-        .any(|allowed| *allowed == relative_name)
+        .any(|allowed| allowed == relative_name.as_ref())
     {
         return Ok(canvas_root.join("__sofvary_not_found__"));
     }
@@ -337,32 +350,54 @@ fn validate_prompt_envelope(envelope: &PromptEnvelope) -> Result<(), Canvas2dRun
             envelope.output_contract.format
         )));
     }
-    ensure_exact_canvas2d_files(
-        "fileSystemPolicy.allowedFiles",
-        &envelope.file_system_policy.allowed_files,
-    )?;
-    ensure_exact_canvas2d_files("outputContract.files", &envelope.output_contract.files)?;
+    ensure_allowed_files_match_output_contract(envelope)?;
 
     Ok(())
 }
 
-fn ensure_exact_canvas2d_files(field: &str, files: &[String]) -> Result<(), Canvas2dRuntimeError> {
-    let expected: HashSet<&str> = CANVAS2D_ALLOWED_FILES.iter().copied().collect();
-    let actual: HashSet<&str> = files.iter().map(String::as_str).collect();
-    if expected == actual && files.len() == CANVAS2D_ALLOWED_FILES.len() {
-        Ok(())
-    } else {
-        Err(Canvas2dRuntimeError::InvalidPromptEnvelope(format!(
-            "{field} must contain exactly the Canvas 2D output contract"
-        )))
+fn ensure_allowed_files_match_output_contract(
+    envelope: &PromptEnvelope,
+) -> Result<(), Canvas2dRuntimeError> {
+    if envelope.file_system_policy.allowed_files.is_empty() {
+        return Err(Canvas2dRuntimeError::InvalidPromptEnvelope(
+            "canvas2d output contract must declare at least one allowed file".to_string(),
+        ));
     }
+
+    for file in envelope
+        .file_system_policy
+        .allowed_files
+        .iter()
+        .chain(envelope.output_contract.files.iter())
+    {
+        validate_relative_contract_file(file)?;
+    }
+
+    let expected: HashSet<&str> = envelope
+        .file_system_policy
+        .allowed_files
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let actual: HashSet<&str> = envelope
+        .output_contract
+        .files
+        .iter()
+        .map(String::as_str)
+        .collect();
+    if expected == actual && expected.len() == envelope.output_contract.files.len() {
+        return Ok(());
+    }
+
+    Err(Canvas2dRuntimeError::InvalidPromptEnvelope(
+        "fileSystemPolicy.allowedFiles and outputContract.files must match".to_string(),
+    ))
 }
 
 fn ensure_exact_workspace_canvas2d_files(
     manifest: &AppBoxManifest,
     allowed_files: &[String],
 ) -> Result<(), Canvas2dRuntimeError> {
-    ensure_exact_canvas2d_files("workspace.generatedCanvas", allowed_files)?;
     let canvas_root = prepare_canvas_root(manifest)?;
     let expected: HashSet<String> = allowed_files.iter().cloned().collect();
     let mut actual = HashSet::new();
@@ -394,18 +429,41 @@ fn collect_canvas_files(
                 .map_err(|_| Canvas2dRuntimeError::PathEscape)?
                 .to_string_lossy()
                 .replace('\\', "/");
-            if !CANVAS2D_ALLOWED_FILES
-                .iter()
-                .any(|allowed| *allowed == relative)
-            {
-                return Err(Canvas2dRuntimeError::InvalidPromptEnvelope(format!(
-                    "generated/canvas contains undeclared file {relative}"
-                )));
-            }
             files.insert(relative);
         }
     }
 
+    Ok(())
+}
+
+fn list_relative_files(root: &Path) -> Result<Vec<String>, Canvas2dRuntimeError> {
+    let mut files = HashSet::new();
+    if root.exists() {
+        collect_canvas_files(root, root, &mut files)?;
+    }
+    let mut files = files.into_iter().collect::<Vec<_>>();
+    files.sort();
+    Ok(files)
+}
+
+fn validate_relative_contract_file(path: &str) -> Result<(), Canvas2dRuntimeError> {
+    if path.trim().is_empty()
+        || path.contains('\\')
+        || path.starts_with('/')
+        || path
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "..")
+        || Path::new(path).components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(Canvas2dRuntimeError::InvalidPromptEnvelope(format!(
+            "output contract file path must stay relative inside generated/canvas: {path}"
+        )));
+    }
     Ok(())
 }
 
@@ -443,7 +501,7 @@ mod tests {
         OutputContract, PackReference, RuntimePolicy,
     };
     use crate::core::workspace_types::{
-        AppBoxManifest, RuntimeKind, WorkspaceConstraints, WorkspacePaths, WorkspacePreview,
+        AppBoxManifest, WorkspaceConstraints, WorkspacePaths, WorkspacePreview,
     };
     use std::io::{Read, Write};
     use std::time::{Duration, Instant};
@@ -451,7 +509,8 @@ mod tests {
     #[test]
     fn rejects_canvas_path_escape() {
         let root = PathBuf::from("/tmp/sofvary/canvas");
-        let result = resolve_canvas_path(&root, "/../secret.txt");
+        let allowed_files = vec!["index.html".to_string()];
+        let result = resolve_canvas_path(&root, "/../secret.txt", &allowed_files);
         assert!(matches!(result, Err(Canvas2dRuntimeError::PathEscape)));
     }
 
@@ -537,7 +596,7 @@ mod tests {
         AppBoxManifest {
             app_id: "app_test".to_string(),
             name: "Canvas Test".to_string(),
-            mode: RuntimeKind::Canvas2d,
+            mode: "canvas2d".to_string(),
             created_at: "now".to_string(),
             updated_at: "now".to_string(),
             stack: vec![],
@@ -562,7 +621,7 @@ mod tests {
 
     fn write_canvas_files(manifest: &AppBoxManifest) {
         let canvas_root = manifest.paths.generated.join("canvas");
-        for file in CANVAS2D_ALLOWED_FILES {
+        for file in canvas_test_files() {
             let path = canvas_root.join(file);
             fs::create_dir_all(path.parent().expect("parent")).expect("parent");
             let contents = match file {
@@ -578,8 +637,8 @@ mod tests {
     }
 
     fn test_envelope() -> PromptEnvelope {
-        let allowed_files = CANVAS2D_ALLOWED_FILES
-            .iter()
+        let allowed_files = canvas_test_files()
+            .into_iter()
             .map(|value| value.to_string())
             .collect::<Vec<_>>();
 
@@ -643,6 +702,23 @@ mod tests {
             },
             acceptance_criteria: Vec::new(),
         }
+    }
+
+    fn canvas_test_files() -> Vec<&'static str> {
+        vec![
+            "index.html",
+            "style.css",
+            "src/main.js",
+            "src/engine/loop.js",
+            "src/engine/input.js",
+            "src/engine/scene.js",
+            "src/engine/collision.js",
+            "src/engine/assets.js",
+            "src/game/config.js",
+            "src/game/player.js",
+            "src/game/enemies.js",
+            "src/game/levels.js",
+        ]
     }
 
     fn read_http(base_url: &str, path: &str) -> String {

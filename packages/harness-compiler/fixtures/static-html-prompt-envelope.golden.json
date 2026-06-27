@@ -29,7 +29,9 @@
   },
   "runtimePolicy": {
     "runtimeKind": "static-html",
-    "allowedEntrypoints": ["index.html"],
+    "allowedEntrypoints": [
+      "index.html"
+    ],
     "allowedServerBind": "127.0.0.1",
     "network": "local-only",
     "packageInstall": false
@@ -37,7 +39,8 @@
   "harnessPolicy": {
     "systemInstructions": [
       "Generate a self-contained static app using index.html, style.css, and app.js.",
-      "Do not require npm, CDNs, remote scripts, external assets, React, SQLite, or plugin execution."
+      "Do not require npm, CDNs, remote scripts, external assets, React, SQLite, or plugin execution.",
+      "Do not require npm, CDNs, remote scripts, or external assets."
     ],
     "fileSystemRules": [
       "Write only inside generated/static for this runtime.",
@@ -63,7 +66,11 @@
   },
   "fileSystemPolicy": {
     "root": "generated/static",
-    "allowedFiles": ["index.html", "style.css", "app.js"],
+    "allowedFiles": [
+      "index.html",
+      "style.css",
+      "app.js"
+    ],
     "allowExternalFiles": false,
     "allowPathTraversal": false
   },
@@ -75,13 +82,20 @@
   },
   "outputContract": {
     "format": "static-html-files",
-    "files": ["index.html", "style.css", "app.js"],
+    "files": [
+      "index.html",
+      "style.css",
+      "app.js"
+    ],
     "shellUiIncluded": false
   },
   "acceptanceCriteria": [
     "Generated output contains exactly index.html, style.css, and app.js.",
     "Generated app does not include Sofvary shell UI, floating menu, build overlay, or host controls.",
     "Generated app runs through the local static preview server without network downloads.",
-    "Harness sofvary.harness.static-html@0.1.0 constraints are represented in the prompt envelope."
+    "Harness sofvary.harness.static-html@0.1.0 constraints are represented in the prompt envelope.",
+    "Before writing UI text, choose a concise software name. Use 'Timer' unless you can derive a better short domain name from the user intent.",
+    "Visible app title and browser title must use the concise software name, not the full user requirement.",
+    "Do not render PromptEnvelope text, runtime repair fallback text, diagnostic text, or Sofvary shell copy inside the generated app UI."
   ]
 }

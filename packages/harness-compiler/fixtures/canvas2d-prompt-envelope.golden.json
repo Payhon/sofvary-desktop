@@ -19,7 +19,7 @@
     "bind": "127.0.0.1",
     "network": "local-only"
   },
-  "userIntent": "Build a canvas coin collector",
+  "userIntent": "Build a coin collector",
   "currentAppState": {
     "appId": "app_test",
     "workspaceName": "Timer",
@@ -29,7 +29,9 @@
   },
   "runtimePolicy": {
     "runtimeKind": "canvas2d",
-    "allowedEntrypoints": ["index.html"],
+    "allowedEntrypoints": [
+      "index.html"
+    ],
     "allowedServerBind": "127.0.0.1",
     "network": "local-only",
     "packageInstall": false
@@ -37,7 +39,9 @@
   "harnessPolicy": {
     "systemInstructions": [
       "Generate a self-contained Canvas 2D app using browser Canvas 2D APIs and requestAnimationFrame.",
-      "Do not use React, CDNs, remote assets, npm packages, external dependencies, SQLite, or plugin execution."
+      "Do not use React, CDNs, remote assets, npm packages, external dependencies, SQLite, or plugin execution.",
+      "Generate a Canvas 2D app using the browser Canvas 2D API and requestAnimationFrame.",
+      "Do not use React, CDNs, remote assets, npm packages, or plugin execution."
     ],
     "fileSystemRules": [
       "Write only inside generated/canvas for this runtime.",
@@ -52,7 +56,8 @@
       "Level data should be configurable.",
       "Include pause and restart controls where reasonable.",
       "Keep Sofvary shell UI out of generated app source.",
-      "The generated app must be exportable without Sofvary floating menu or build overlay UI."
+      "The generated app must be exportable without Sofvary floating menu or build overlay UI.",
+      "Include pause and restart behavior where reasonable."
     ],
     "blockedCapabilities": [
       "cdn-assets",
@@ -115,6 +120,9 @@
     "Generated app does not use React, external CDN, remote assets, npm packages, or Sofvary shell UI.",
     "Update, render, input, and state are split across declared engine and game files.",
     "Level data is configurable and pause/restart behavior is included where reasonable.",
-    "Harness sofvary.harness.canvas2d@0.1.0 constraints are represented in the prompt envelope."
+    "Harness sofvary.harness.canvas2d@0.1.0 constraints are represented in the prompt envelope.",
+    "Before writing UI text, choose a concise software name. Use 'Timer' unless you can derive a better short domain name from the user intent.",
+    "Visible app title and browser title must use the concise software name, not the full user requirement.",
+    "Do not render PromptEnvelope text, runtime repair fallback text, diagnostic text, or Sofvary shell copy inside the generated app UI."
   ]
 }

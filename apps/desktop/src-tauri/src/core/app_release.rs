@@ -1,3 +1,5 @@
+use crate::core::pack_manager::PackManager;
+use crate::core::pack_types::RuntimePackManifest;
 use crate::core::policy_engine::{PolicyEngine, PolicyError};
 use crate::core::policy_types::{PolicyAppReleaseRequest, PolicyApprovalSet};
 use crate::core::published_app_packager::{
@@ -147,7 +149,7 @@ pub fn get_app_release_capabilities_with_adapter(
                 }
             })
             .collect(),
-        runtimes: runtime_capabilities(),
+        runtimes: runtime_capabilities(adapter),
     }
 }
 
@@ -365,83 +367,37 @@ fn output_kind_for_platform(platform: &str) -> &'static str {
     }
 }
 
-fn runtime_capabilities() -> Vec<AppReleaseRuntimeCapability> {
-    [
-        RuntimeKind::StaticHtml,
-        RuntimeKind::ReactVite,
-        RuntimeKind::ReactSqlite,
-        RuntimeKind::AiAgentApp,
-        RuntimeKind::Canvas2d,
-        RuntimeKind::MarkdownKnowledge,
-        RuntimeKind::DataTable,
-        RuntimeKind::FileProcessor,
-        RuntimeKind::DesktopWidget,
-    ]
-    .into_iter()
-    .map(runtime_capability)
-    .collect()
+fn runtime_capabilities(adapter: &dyn PlatformAdapter) -> Vec<AppReleaseRuntimeCapability> {
+    PackManager::new_with_adapter(adapter)
+        .and_then(|manager| manager.runtime_catalog_manifests())
+        .unwrap_or_default()
+        .into_iter()
+        .map(runtime_capability)
+        .collect()
 }
 
-fn runtime_capability(runtime_kind: RuntimeKind) -> AppReleaseRuntimeCapability {
-    let (label, release_strategy, notes) = match runtime_kind {
-        RuntimeKind::StaticHtml => (
-            "Static HTML",
-            "seed-static-host",
-            vec!["Package generated static files into the published host."],
-        ),
-        RuntimeKind::Canvas2d => (
-            "Canvas 2D",
-            "seed-static-host",
-            vec!["Package Canvas assets and static host resources."],
-        ),
-        RuntimeKind::ReactVite => (
-            "React + Vite",
-            "controlled-prod-build",
-            vec!["Run the workspace production build before bundling dist output."],
-        ),
-        RuntimeKind::ReactSqlite => (
-            "React + SQLite",
-            "controlled-prod-build-node-api-sqlite",
-            vec![
-                "Bundle frontend dist, Node API sidecar metadata, schema, seeds, and offline dependency metadata.",
-                "Installed app data expands into the per-user data directory on first launch.",
-            ],
-        ),
-        RuntimeKind::AiAgentApp => (
-            "AI Agent App",
-            "controlled-prod-build-ai-bindings",
-            vec!["Bundle provider requirement metadata without raw provider secrets."],
-        ),
-        RuntimeKind::MarkdownKnowledge => (
-            "Markdown Knowledge",
-            "controlled-prod-build-content-index",
-            vec!["Bundle generated content and runtime metadata."],
-        ),
-        RuntimeKind::DataTable => (
-            "Data Table",
-            "controlled-prod-build-data-runtime",
-            vec!["Bundle generated table runtime metadata and seed assets."],
-        ),
-        RuntimeKind::FileProcessor => (
-            "File Processor",
-            "controlled-prod-build-file-runtime",
-            vec!["Bundle processor UI and keep user-selected files outside the release package."],
-        ),
-        RuntimeKind::DesktopWidget => (
-            "Desktop Widget",
-            "controlled-prod-build-widget-runtime",
-            vec!["Bundle widget assets through the published host template."],
-        ),
-    };
+fn runtime_capability(runtime_pack: RuntimePackManifest) -> AppReleaseRuntimeCapability {
+    let release_strategy = release_strategy_for_executor(&runtime_pack.executor.kind);
 
     AppReleaseRuntimeCapability {
-        runtime_kind,
-        label: label.to_string(),
+        runtime_kind: runtime_pack.runtime.kind,
+        label: runtime_pack.name,
         supported: true,
-        release_strategy: release_strategy.to_string(),
+        release_strategy,
         ai_continuation_supported: true,
-        notes: notes.into_iter().map(ToString::to_string).collect(),
+        notes: vec![runtime_pack.description],
     }
+}
+
+fn release_strategy_for_executor(executor_kind: &str) -> String {
+    match executor_kind {
+        "static-html" | "canvas2d" => "seed-static-host",
+        "react-sqlite" => "controlled-prod-build-node-api-sqlite",
+        "ai-agent-app" => "controlled-prod-build-ai-bindings",
+        "react-project" => "controlled-prod-build-project",
+        _ => "controlled-prod-build",
+    }
+    .to_string()
 }
 
 pub fn policy_request_for_preview(
@@ -459,7 +415,7 @@ pub fn policy_request_for_preview(
         target_platform,
         output_dir,
         include_ai_continuation,
-        runtime_kind: format!("{:?}", runtime_kind),
+        runtime_kind,
         plugin_packs,
     }
 }

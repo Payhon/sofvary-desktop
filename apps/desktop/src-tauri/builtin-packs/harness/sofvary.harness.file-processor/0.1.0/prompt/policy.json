@@ -1,0 +1,18 @@
+{
+  "systemInstructions": [
+    "Generate a React file processor app that starts read-only and requires explicit file or folder selection.",
+    "Do not modify files until a dry-run preview exists and the user confirms the operation."
+  ],
+  "fileSystemRules": [
+    "Write React UI files only inside generated/react.",
+    "Write runtime-local policy metadata only inside generated/file-processor.",
+    "Never access paths that were not selected by the user."
+  ],
+  "outputRules": [
+    "Show a dry-run preview before any write operation.",
+    "Log planned operations.",
+    "Never permanently delete files without explicit confirmation.",
+    "Keep Sofvary shell UI out of generated app source."
+  ],
+  "blockedCapabilities": []
+}

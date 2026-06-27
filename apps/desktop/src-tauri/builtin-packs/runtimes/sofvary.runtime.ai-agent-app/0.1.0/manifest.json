@@ -20,7 +20,10 @@
         "supported": true
       }
     },
-    "arch": ["x64", "arm64"]
+    "arch": [
+      "x64",
+      "arm64"
+    ]
   },
   "stack": {
     "frontend": "React",
@@ -39,7 +42,11 @@
   "commands": {
     "install": {
       "executable": "${sidecar:pnpm}",
-      "args": ["install", "--offline", "--ignore-scripts"],
+      "args": [
+        "install",
+        "--offline",
+        "--ignore-scripts"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "timeoutMs": 60000,
@@ -47,14 +54,24 @@
     },
     "dev": {
       "executable": "${sidecar:pnpm}",
-      "args": ["exec", "vite", "--host", "127.0.0.1", "--port", "${port}"],
+      "args": [
+        "exec",
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "${port}"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "killOnDrop": true
     },
     "build": {
       "executable": "${sidecar:pnpm}",
-      "args": ["run", "build"],
+      "args": [
+        "run",
+        "build"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "timeoutMs": 120000,
@@ -68,5 +85,50 @@
     "sofvary.harness.video-agent",
     "sofvary.harness.multimodal-studio-agent"
   ],
-  "integrity": {}
+  "integrity": {},
+  "executor": {
+    "kind": "react-project",
+    "allowedTopLevelDirs": [
+      "ai",
+      "react"
+    ],
+    "clearRoots": [
+      "generated/ai",
+      "generated/react"
+    ],
+    "contextRoot": "generated",
+    "requiredToolchains": [
+      "nodejs"
+    ]
+  },
+  "promptEnvelope": "prompt/envelope.json",
+  "selection": {
+    "softwareType": "AI Agent App",
+    "reason": "The request is about creating a user-owned AI Agent app with provider binding, AI job calls, or generated text, image, or video artifacts.",
+    "signals": [
+      "ai agent",
+      "agent app",
+      "provider binding",
+      "llm provider",
+      "write article",
+      "article agent",
+      "write novel",
+      "novel agent",
+      "image generation",
+      "generate image",
+      "video generation",
+      "generate video",
+      "multimodal",
+      "生图",
+      "生成图片",
+      "生成视频",
+      "写文章",
+      "写小说",
+      "智能体",
+      "智能体应用"
+    ],
+    "weight": 6,
+    "priority": 90
+  },
+  "builtin": true
 }

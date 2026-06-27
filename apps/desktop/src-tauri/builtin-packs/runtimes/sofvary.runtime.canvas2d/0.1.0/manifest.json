@@ -20,7 +20,10 @@
         "supported": true
       }
     },
-    "arch": ["x64", "arm64"]
+    "arch": [
+      "x64",
+      "arm64"
+    ]
   },
   "stack": {
     "frontend": "Canvas 2D",
@@ -37,6 +40,41 @@
     "network": "local-only"
   },
   "commands": {},
-  "defaultHarness": ["sofvary.harness.canvas2d"],
-  "integrity": {}
+  "defaultHarness": [
+    "sofvary.harness.canvas2d"
+  ],
+  "integrity": {},
+  "executor": {
+    "kind": "canvas2d",
+    "allowedTopLevelDirs": [
+      "canvas"
+    ],
+    "clearRoots": [
+      "generated/canvas"
+    ],
+    "contextRoot": "generated/canvas",
+    "requiredToolchains": []
+  },
+  "promptEnvelope": "prompt/envelope.json",
+  "selection": {
+    "softwareType": "Interactive Visual Tool",
+    "reason": "The request needs canvas-style drawing, animation, game loops, or visual simulation.",
+    "signals": [
+      "canvas",
+      "game",
+      "animation",
+      "simulation",
+      "draw",
+      "visual",
+      "游戏",
+      "动画",
+      "画布",
+      "绘图",
+      "模拟",
+      "可视化"
+    ],
+    "weight": 4,
+    "priority": 55
+  },
+  "builtin": true
 }

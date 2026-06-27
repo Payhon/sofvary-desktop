@@ -1,0 +1,76 @@
+{
+  "outputFormat": "react-vite-project",
+  "allowedFiles": [
+    "package.json",
+    "index.html",
+    "vite.config.ts",
+    "tsconfig.json",
+    "src/main.tsx",
+    "src/App.tsx",
+    "src/components/TaskBoard.tsx",
+    "src/styles/app.css"
+  ],
+  "fileSystemRoot": "generated/react",
+  "runtimePolicy": {
+    "packageInstall": false
+  },
+  "commandPolicy": {
+    "allowShell": false,
+    "allowPackageInstall": false,
+    "allowGlobalInstall": false,
+    "allowedCommands": []
+  },
+  "harnessPolicy": {
+    "systemInstructions": [
+      "Generate a React + Vite app using React function components and TypeScript.",
+      "Do not use Next.js, Electron, external CDNs, remote assets, SQLite, plugin execution, or a default UI framework."
+    ],
+    "fileSystemRules": [
+      "Write only inside generated/react for this runtime.",
+      "Do not read or write paths outside the active Sofvary workspace.",
+      "Components go under src/components.",
+      "Styles go under src/styles.",
+      "Do not create files outside the React + Vite output contract."
+    ],
+    "outputRules": [
+      "App.tsx is the main app entry component.",
+      "The generated app must pass npm run build.",
+      "Keep Sofvary shell UI out of generated app source.",
+      "The generated app must be exportable without Sofvary floating menu or build overlay UI."
+    ],
+    "blockedCapabilities": [
+      "cdn-assets",
+      "electron-runtime",
+      "external-ui-framework",
+      "nextjs-runtime",
+      "plugin-execution",
+      "remote-network",
+      "shell-command",
+      "sofvary-shell-ui",
+      "sqlite-runtime"
+    ]
+  },
+  "acceptanceCriteria": [
+    "Generated output contains exactly the React + Vite project file set.",
+    "Generated app uses React function components, TypeScript, and Vite.",
+    "Generated app does not include Sofvary shell UI, floating menu, build overlay, or host controls.",
+    "Generated app uses no Next.js, Electron, external CDN, remote assets, SQLite, or default UI framework.",
+    "Generated app can run through the local Vite dev server bound to 127.0.0.1.",
+    "Harness {{harness.id}}@{{harness.version}} constraints are represented in the prompt envelope.",
+    "Before writing UI text, choose a concise software name. Use '{{workspace.name}}' unless you can derive a better short domain name from the user intent.",
+    "Visible app title and browser title must use the concise software name, not the full user requirement.",
+    "Do not render PromptEnvelope text, runtime repair fallback text, diagnostic text, or Sofvary shell copy inside the generated app UI."
+  ],
+  "updateMode": {
+    "systemInstructions": [
+      "This is an update to an existing Sofvary app. Use currentAppState.fileContext as the existing implementation context before changing files.",
+      "Do not rebuild from zero, switch Runtime, change the output contract, or discard existing behavior unless userIntent explicitly asks for it."
+    ],
+    "outputRules": [
+      "For update mode, return the complete allowed file set after applying the requested change so the workspace remains runnable."
+    ],
+    "acceptanceCriteria": [
+      "Update mode preserves existing app behavior and applies the new request on top of currentAppState.fileContext."
+    ]
+  }
+}

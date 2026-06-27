@@ -20,7 +20,10 @@
         "supported": true
       }
     },
-    "arch": ["x64", "arm64"]
+    "arch": [
+      "x64",
+      "arm64"
+    ]
   },
   "stack": {
     "frontend": "React",
@@ -39,7 +42,11 @@
   "commands": {
     "install": {
       "executable": "${sidecar:pnpm}",
-      "args": ["install", "--offline", "--ignore-scripts"],
+      "args": [
+        "install",
+        "--offline",
+        "--ignore-scripts"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "timeoutMs": 60000,
@@ -47,20 +54,75 @@
     },
     "dev": {
       "executable": "${sidecar:pnpm}",
-      "args": ["exec", "vite", "--host", "127.0.0.1", "--port", "${port}"],
+      "args": [
+        "exec",
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "${port}"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "killOnDrop": true
     },
     "build": {
       "executable": "${sidecar:pnpm}",
-      "args": ["run", "build"],
+      "args": [
+        "run",
+        "build"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "timeoutMs": 120000,
       "killOnDrop": true
     }
   },
-  "defaultHarness": ["sofvary.harness.data-table"],
-  "integrity": {}
+  "defaultHarness": [
+    "sofvary.harness.data-table"
+  ],
+  "integrity": {},
+  "executor": {
+    "kind": "react-project",
+    "allowedTopLevelDirs": [
+      "data",
+      "react"
+    ],
+    "clearRoots": [
+      "generated/data",
+      "generated/react"
+    ],
+    "contextRoot": "generated",
+    "requiredToolchains": [
+      "nodejs"
+    ]
+  },
+  "promptEnvelope": "prompt/envelope.json",
+  "selection": {
+    "softwareType": "Data Table Tool",
+    "reason": "The request is centered on tabular data, filtering, sorting, CSV, or lightweight data cleaning.",
+    "signals": [
+      "table",
+      "spreadsheet",
+      "csv",
+      "inventory",
+      "budget",
+      "filter",
+      "sort",
+      "data cleaning",
+      "data cleanup",
+      "表格",
+      "数据表",
+      "CSV",
+      "库存",
+      "预算",
+      "筛选",
+      "排序",
+      "数据清洗",
+      "清洗页面"
+    ],
+    "weight": 4,
+    "priority": 70
+  },
+  "builtin": true
 }

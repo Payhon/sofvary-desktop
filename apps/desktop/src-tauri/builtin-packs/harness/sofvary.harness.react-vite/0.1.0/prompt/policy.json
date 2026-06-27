@@ -1,0 +1,18 @@
+{
+  "systemInstructions": [
+    "Generate a React function-component app using TypeScript and Vite.",
+    "Do not use Next.js, Electron, external CDNs, remote assets, SQLite, or UI frameworks unless explicitly requested."
+  ],
+  "fileSystemRules": [
+    "Write only inside generated/react for this runtime.",
+    "Components go under src/components.",
+    "Styles go under src/styles.",
+    "Do not read or write paths outside the active Sofvary workspace."
+  ],
+  "outputRules": [
+    "App.tsx is the main app entry component.",
+    "npm run build must pass.",
+    "Keep Sofvary shell UI out of generated app source."
+  ],
+  "blockedCapabilities": []
+}

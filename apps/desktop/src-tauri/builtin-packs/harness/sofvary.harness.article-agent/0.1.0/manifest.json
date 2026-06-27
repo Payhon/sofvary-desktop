@@ -20,31 +20,27 @@
         "supported": true
       }
     },
-    "arch": ["x64", "arm64"]
+    "arch": [
+      "x64",
+      "arm64"
+    ]
   },
   "runtime": "sofvary.runtime.ai-agent-app",
   "softwareSpecies": {
     "id": "article-agent",
     "name": "Article Agent",
     "description": "A provider-bound writing agent for briefs, outlines, drafts, rewrites, and editorial review.",
-    "runtimeKinds": ["ai-agent-app"],
-    "tags": ["agent", "writing", "article", "text"]
-  },
-  "instructions": {
-    "system": [
-      "Generate an AI Agent App focused on article planning, drafting, rewriting, and editorial review.",
-      "Use only text-capable provider requirements through the Sofvary AI Gateway."
+    "runtimeKinds": [
+      "ai-agent-app"
     ],
-    "fileSystemPolicy": [
-      "Write provider requirement metadata only inside generated/ai.",
-      "Write React UI files only inside generated/react.",
-      "Do not store drafts outside the active workspace unless a future user-approved export flow exists."
-    ],
-    "outputRules": [
-      "Show provider binding status without displaying API keys or secure refs.",
-      "Send article generation requests only to the local Sofvary AI Gateway.",
-      "Keep generated artifacts workspace-local and export-clean."
+    "tags": [
+      "agent",
+      "writing",
+      "article",
+      "text"
     ]
   },
-  "integrity": {}
+  "integrity": {},
+  "promptPolicy": "prompt/policy.json",
+  "builtin": true
 }

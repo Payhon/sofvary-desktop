@@ -66,6 +66,32 @@ pub struct RuntimePackRuntime {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RuntimePackExecutor {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_toolchains: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_top_level_dirs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clear_roots: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preserve_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_root: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimePackSelection {
+    pub software_type: String,
+    pub reason: String,
+    pub signals: Vec<String>,
+    pub weight: i32,
+    pub priority: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimePackManifest {
     pub schema_version: String,
     #[serde(rename = "type")]
@@ -74,21 +100,17 @@ pub struct RuntimePackManifest {
     pub version: String,
     pub name: String,
     pub description: String,
+    pub builtin: bool,
     pub compatibility: PackCompatibility,
     pub stack: RuntimePackStack,
     pub runtime: RuntimePackRuntime,
+    pub executor: RuntimePackExecutor,
+    pub prompt_envelope: String,
+    pub selection: RuntimePackSelection,
     #[serde(default)]
     pub commands: HashMap<String, PackCommandSpec>,
     pub default_harness: Vec<String>,
     pub integrity: Option<PackIntegrity>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HarnessPackInstructions {
-    pub system: Vec<String>,
-    pub file_system_policy: Vec<String>,
-    pub output_rules: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,11 +136,12 @@ pub struct HarnessPackManifest {
     pub version: String,
     pub name: String,
     pub description: String,
+    pub builtin: bool,
     pub compatibility: PackCompatibility,
     pub runtime: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub software_species: Option<SoftwareSpeciesMetadata>,
-    pub instructions: HarnessPackInstructions,
+    pub prompt_policy: String,
     pub integrity: Option<PackIntegrity>,
 }
 

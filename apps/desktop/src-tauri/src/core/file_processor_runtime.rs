@@ -1,11 +1,4 @@
-use crate::core::harness_engine::{PromptEnvelope, FILE_PROCESSOR_ALLOWED_FILES};
-use crate::core::pack_types::RuntimePackManifest;
-use crate::core::policy_types::PolicyApprovalSet;
-use crate::core::react_project_runtime::{
-    ReactProjectRuntime, ReactProjectRuntimeError, ReactProjectRuntimeServer,
-    ReactProjectRuntimeSpec,
-};
-use crate::core::workspace_types::{AppBoxManifest, RuntimeMode};
+use crate::core::workspace_types::AppBoxManifest;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -13,12 +6,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-pub type FileProcessorRuntimeServer = ReactProjectRuntimeServer;
-
 #[derive(Debug, Error)]
 pub enum FileProcessorRuntimeError {
-    #[error("react project runtime error: {0}")]
-    ReactProject(#[from] ReactProjectRuntimeError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("path was not explicitly selected: {0}")]
@@ -30,9 +19,6 @@ pub enum FileProcessorRuntimeError {
     #[error("invalid file processor plan: {0}")]
     InvalidPlan(String),
 }
-
-#[derive(Default)]
-pub struct FileProcessorRuntime;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileProcessorOperationLogEntry {
@@ -102,62 +88,6 @@ impl FileProcessorDryRunGate {
         } else {
             Err(FileProcessorRuntimeError::MissingDryRun)
         }
-    }
-}
-
-impl FileProcessorRuntime {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub fn validate_prompt_envelope(
-        &self,
-        envelope: &PromptEnvelope,
-    ) -> Result<(), FileProcessorRuntimeError> {
-        Ok(ReactProjectRuntime::new(file_processor_spec()).validate_prompt_envelope(envelope)?)
-    }
-
-    #[allow(dead_code)]
-    pub fn start_workspace_with_envelope(
-        &self,
-        manifest: &AppBoxManifest,
-        envelope: &PromptEnvelope,
-        runtime_pack: &RuntimePackManifest,
-        mode: RuntimeMode,
-    ) -> Result<FileProcessorRuntimeServer, FileProcessorRuntimeError> {
-        self.start_workspace_with_envelope_with_policy(
-            manifest,
-            envelope,
-            runtime_pack,
-            mode,
-            &PolicyApprovalSet::default(),
-        )
-    }
-
-    pub fn start_workspace_with_envelope_with_policy(
-        &self,
-        manifest: &AppBoxManifest,
-        envelope: &PromptEnvelope,
-        runtime_pack: &RuntimePackManifest,
-        mode: RuntimeMode,
-        approvals: &PolicyApprovalSet,
-    ) -> Result<FileProcessorRuntimeServer, FileProcessorRuntimeError> {
-        self.validate_prompt_envelope(envelope)?;
-        append_operation_log(
-            manifest,
-            &FileProcessorOperationLogEntry {
-                event: "runtime-started".to_string(),
-                detail: "Phase 14 MVP starts read-only and records dry-run plans only.".to_string(),
-            },
-        )?;
-        Ok(ReactProjectRuntime::new(file_processor_spec())
-            .start_workspace_with_envelope_with_policy(
-                manifest,
-                envelope,
-                runtime_pack,
-                mode,
-                approvals,
-            )?)
     }
 }
 
@@ -292,17 +222,6 @@ fn validate_selected_files(
     }
 
     Ok(())
-}
-
-fn file_processor_spec() -> ReactProjectRuntimeSpec {
-    ReactProjectRuntimeSpec {
-        runtime_kind: "file-processor",
-        generated_root: "generated",
-        entrypoint: "react/src/main.tsx",
-        output_format: "file-processor-project",
-        allowed_files: &FILE_PROCESSOR_ALLOWED_FILES,
-        label: "File Processor",
-    }
 }
 
 fn normalize_path_lexically(path: &Path) -> PathBuf {
@@ -446,7 +365,7 @@ mod tests {
         AppBoxManifest {
             app_id: "app_test".to_string(),
             name: "Test".to_string(),
-            mode: crate::core::workspace_types::RuntimeKind::FileProcessor,
+            mode: "file-processor".to_string(),
             created_at: "now".to_string(),
             updated_at: "now".to_string(),
             stack: Vec::new(),

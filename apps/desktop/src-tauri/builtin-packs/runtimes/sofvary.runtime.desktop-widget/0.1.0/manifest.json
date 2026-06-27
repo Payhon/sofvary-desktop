@@ -20,7 +20,10 @@
         "supported": true
       }
     },
-    "arch": ["x64", "arm64"]
+    "arch": [
+      "x64",
+      "arm64"
+    ]
   },
   "stack": {
     "frontend": "React",
@@ -39,7 +42,11 @@
   "commands": {
     "install": {
       "executable": "${sidecar:pnpm}",
-      "args": ["install", "--offline", "--ignore-scripts"],
+      "args": [
+        "install",
+        "--offline",
+        "--ignore-scripts"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "timeoutMs": 60000,
@@ -47,20 +54,70 @@
     },
     "dev": {
       "executable": "${sidecar:pnpm}",
-      "args": ["exec", "vite", "--host", "127.0.0.1", "--port", "${port}"],
+      "args": [
+        "exec",
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "${port}"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "killOnDrop": true
     },
     "build": {
       "executable": "${sidecar:pnpm}",
-      "args": ["run", "build"],
+      "args": [
+        "run",
+        "build"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "timeoutMs": 120000,
       "killOnDrop": true
     }
   },
-  "defaultHarness": ["sofvary.harness.desktop-widget"],
-  "integrity": {}
+  "defaultHarness": [
+    "sofvary.harness.desktop-widget"
+  ],
+  "integrity": {},
+  "executor": {
+    "kind": "react-project",
+    "allowedTopLevelDirs": [
+      "widget",
+      "react"
+    ],
+    "clearRoots": [
+      "generated/widget",
+      "generated/react"
+    ],
+    "contextRoot": "generated",
+    "requiredToolchains": [
+      "nodejs"
+    ]
+  },
+  "promptEnvelope": "prompt/envelope.json",
+  "selection": {
+    "softwareType": "Desktop Widget",
+    "reason": "The request sounds like a compact timer, countdown, quick note, or small desktop utility.",
+    "signals": [
+      "pomodoro",
+      "timer",
+      "countdown",
+      "widget",
+      "quick note",
+      "small dashboard",
+      "番茄钟",
+      "计时",
+      "倒计时",
+      "小组件",
+      "便签",
+      "桌面组件",
+      "小面板"
+    ],
+    "weight": 4,
+    "priority": 50
+  },
+  "builtin": true
 }

@@ -1,0 +1,17 @@
+{
+  "systemInstructions": [
+    "Generate a Canvas 2D app using the browser Canvas 2D API and requestAnimationFrame.",
+    "Do not use React, CDNs, remote assets, npm packages, or plugin execution."
+  ],
+  "fileSystemRules": [
+    "Write only inside generated/canvas for this runtime.",
+    "Split update, render, input, and state across the declared engine and game files.",
+    "Do not read or write paths outside the active Sofvary workspace."
+  ],
+  "outputRules": [
+    "Level data should be configurable.",
+    "Include pause and restart behavior where reasonable.",
+    "Keep Sofvary shell UI out of generated app source."
+  ],
+  "blockedCapabilities": []
+}

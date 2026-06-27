@@ -1,0 +1,17 @@
+{
+  "systemInstructions": [
+    "Generate a React + Vite Markdown knowledge app with categories, tags, local search, preview, and editing.",
+    "Do not access arbitrary user notes, upload notes, use SQLite, or call cloud services."
+  ],
+  "fileSystemRules": [
+    "Write Markdown content only inside generated/markdown.",
+    "Write React UI files only inside generated/react.",
+    "Do not read or write paths outside the active Sofvary workspace."
+  ],
+  "outputRules": [
+    "The app starts with Markdown preview and editing.",
+    "Search must use local generated content only.",
+    "Keep Sofvary shell UI out of generated app source."
+  ],
+  "blockedCapabilities": []
+}

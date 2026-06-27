@@ -769,7 +769,7 @@ fn invalid_registry_url(message: &str) -> DeepLinkInstallError {
 mod tests {
     use super::*;
     use crate::core::app_capsule::{export_app_capsule_with_adapter, ExportAppCapsulePayload};
-    use crate::core::workspace_types::{AppBoxManifest, RuntimeKind};
+    use crate::core::workspace_types::AppBoxManifest;
     use crate::platform::macos::MacosPlatformAdapter;
     use crate::platform::{
         ArchKind, CommandSpec, OsKind, PlatformDirs, PlatformResult, ProcessHandle, ProcessOutput,
@@ -1025,7 +1025,7 @@ mod tests {
         let source = workspace_manager
             .create_workspace_for_runtime_with_adapter(
                 "Mock Registry Capsule".to_string(),
-                RuntimeKind::StaticHtml,
+                "static-html".to_string(),
                 &adapter,
             )
             .expect("workspace");

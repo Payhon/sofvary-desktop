@@ -1,0 +1,17 @@
+{
+  "systemInstructions": [
+    "Generate a React frontend, a Node local API, and SQLite persistence for a local customer manager.",
+    "The frontend must call /api/* endpoints only and must never open or import SQLite directly."
+  ],
+  "fileSystemRules": [
+    "Write React and Node API files inside generated/react.",
+    "Write schema, migrations, seed data, and app.sqlite only inside generated/data.",
+    "Do not read or write paths outside the active Sofvary workspace."
+  ],
+  "outputRules": [
+    "Use parameterized SQL statements for every user-controlled value.",
+    "The API must bind to 127.0.0.1 only.",
+    "Keep Sofvary shell UI out of generated app source."
+  ],
+  "blockedCapabilities": []
+}

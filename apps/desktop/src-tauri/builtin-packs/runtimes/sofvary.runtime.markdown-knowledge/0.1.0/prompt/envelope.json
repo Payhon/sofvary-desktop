@@ -1,0 +1,76 @@
+{
+  "outputFormat": "markdown-knowledge-project",
+  "allowedFiles": [
+    "markdown/index.json",
+    "markdown/content/getting-started.md",
+    "react/package.json",
+    "react/index.html",
+    "react/vite.config.ts",
+    "react/tsconfig.json",
+    "react/src/main.tsx",
+    "react/src/App.tsx",
+    "react/src/components/MarkdownKnowledgeApp.tsx",
+    "react/src/styles/app.css"
+  ],
+  "fileSystemRoot": "generated",
+  "runtimePolicy": {
+    "packageInstall": false
+  },
+  "commandPolicy": {
+    "allowShell": false,
+    "allowPackageInstall": false,
+    "allowGlobalInstall": false,
+    "allowedCommands": []
+  },
+  "harnessPolicy": {
+    "systemInstructions": [
+      "Generate a React + Vite Markdown knowledge app with local notes, categories, tags, search, preview, and editing.",
+      "Do not access arbitrary user notes, upload notes, use SQLite, call cloud services, or execute plugins."
+    ],
+    "fileSystemRules": [
+      "Write Markdown content and index files only inside generated/markdown.",
+      "Write React UI files only inside generated/react.",
+      "Do not read or write paths outside the active Sofvary workspace.",
+      "Do not create files outside the Markdown Knowledge output contract."
+    ],
+    "outputRules": [
+      "Start with Markdown preview and editing.",
+      "Search must use generated local content only.",
+      "Keep Sofvary shell UI out of generated app source.",
+      "The generated app must be exportable without Sofvary floating menu or build overlay UI."
+    ],
+    "blockedCapabilities": [
+      "arbitrary-user-notes",
+      "cloud-service",
+      "external-ui-framework",
+      "note-upload",
+      "plugin-execution",
+      "remote-network",
+      "shell-command",
+      "sofvary-shell-ui",
+      "sqlite-runtime"
+    ]
+  },
+  "acceptanceCriteria": [
+    "Generated output contains exactly the Markdown Knowledge project file set.",
+    "Markdown content and index stay inside generated/markdown.",
+    "Generated app provides local categories, tags, search, preview, and editing state.",
+    "Generated app does not access arbitrary user notes, upload notes, use SQLite, call cloud services, or include Sofvary shell UI.",
+    "Harness {{harness.id}}@{{harness.version}} constraints are represented in the prompt envelope.",
+    "Before writing UI text, choose a concise software name. Use '{{workspace.name}}' unless you can derive a better short domain name from the user intent.",
+    "Visible app title and browser title must use the concise software name, not the full user requirement.",
+    "Do not render PromptEnvelope text, runtime repair fallback text, diagnostic text, or Sofvary shell copy inside the generated app UI."
+  ],
+  "updateMode": {
+    "systemInstructions": [
+      "This is an update to an existing Sofvary app. Use currentAppState.fileContext as the existing implementation context before changing files.",
+      "Do not rebuild from zero, switch Runtime, change the output contract, or discard existing behavior unless userIntent explicitly asks for it."
+    ],
+    "outputRules": [
+      "For update mode, return the complete allowed file set after applying the requested change so the workspace remains runnable."
+    ],
+    "acceptanceCriteria": [
+      "Update mode preserves existing app behavior and applies the new request on top of currentAppState.fileContext."
+    ]
+  }
+}

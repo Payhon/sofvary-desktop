@@ -1,14 +1,5 @@
-use crate::core::harness_engine::{
-    AI_AGENT_APP_ALLOWED_FILES, CANVAS2D_ALLOWED_FILES, DATA_TABLE_ALLOWED_FILES,
-    DESKTOP_WIDGET_ALLOWED_FILES, FILE_PROCESSOR_ALLOWED_FILES, MARKDOWN_KNOWLEDGE_ALLOWED_FILES,
-    REACT_SQLITE_ALLOWED_FILES, REACT_VITE_ALLOWED_FILES, STATIC_HTML_ALLOWED_FILES,
-};
-use crate::core::pack_manager::{
-    PackError, PackManager, AI_AGENT_APP_RUNTIME_PACK_ID, CANVAS2D_RUNTIME_PACK_ID,
-    DATA_TABLE_RUNTIME_PACK_ID, DESKTOP_WIDGET_RUNTIME_PACK_ID, FILE_PROCESSOR_RUNTIME_PACK_ID,
-    MARKDOWN_KNOWLEDGE_RUNTIME_PACK_ID, REACT_SQLITE_RUNTIME_PACK_ID, REACT_VITE_RUNTIME_PACK_ID,
-    STATIC_HTML_RUNTIME_PACK_ID,
-};
+use crate::core::pack_manager::{read_pack_resource_text, PackError, PackKind, PackManager};
+use crate::core::pack_types::RuntimePackManifest;
 use crate::core::policy_engine::{PolicyEngine, PolicyError};
 use crate::core::policy_types::{PolicyApprovalSet, PolicyCapsuleImportRequest};
 use crate::core::workspace_manager::{WorkspaceError, WorkspaceManager};
@@ -262,8 +253,14 @@ pub fn export_app_capsule_with_adapter(
     let app_manifest = manager.get_workspace_with_adapter(payload.app_id, adapter)?;
     let lockfile = manager.read_lockfile_for_manifest(&app_manifest)?;
     let generated_root = app_manifest.paths.generated.clone();
+    let runtime_pack = single_locked_pack(&lockfile.runtime_packs, "runtime")?;
+    let pack_manager = PackManager::new_with_adapter(adapter)?;
+    let resolved_runtime_pack = pack_manager
+        .resolver()
+        .resolve_runtime(&runtime_pack.id, &runtime_pack.version)?;
 
-    let mut file_entries = collect_generated_entries(&generated_root, app_manifest.mode)?;
+    let mut file_entries =
+        collect_generated_entries(&generated_root, &resolved_runtime_pack.manifest)?;
     let lockfile_bytes = serde_json::to_vec_pretty(&lockfile)?;
     file_entries.push(CapsuleFileEntry {
         path: "sofvary.lock.json".to_string(),
@@ -290,8 +287,8 @@ pub fn export_app_capsule_with_adapter(
         .filter(|entry| entry.path.starts_with("source/generated/"))
         .map(|entry| entry.path.clone())
         .collect::<Vec<_>>();
-    let database = database_metadata(app_manifest.mode, &generated_paths);
-    let runtime_pack = single_locked_pack(&lockfile.runtime_packs, "runtime")?;
+    let runtime_kind = app_manifest.mode.clone();
+    let database = database_metadata(&runtime_kind, &generated_paths);
     let harness_packs = locked_packs_from_map(&lockfile.harness_packs);
     let plugin_packs = locked_packs_from_map(&lockfile.plugin_packs);
 
@@ -308,7 +305,7 @@ pub fn export_app_capsule_with_adapter(
         },
         created_at: app_manifest.updated_at.clone(),
         runtime: AppCapsuleRuntime {
-            kind: app_manifest.mode,
+            kind: runtime_kind.clone(),
             pack: runtime_pack,
             generated_root: "source/generated".to_string(),
         },
@@ -326,10 +323,10 @@ pub fn export_app_capsule_with_adapter(
                 write: Vec::new(),
             },
         },
-        ai_provider_requirements: ai_provider_requirements_for_runtime(app_manifest.mode),
+        ai_provider_requirements: ai_provider_requirements_for_runtime(&runtime_kind),
         entry: AppCapsuleEntry {
-            path: entry_path_for_runtime(app_manifest.mode).to_string(),
-            kind: entry_kind_for_runtime(app_manifest.mode).to_string(),
+            path: entry_path_for_runtime_pack(&resolved_runtime_pack.manifest)?,
+            kind: entry_kind_for_runtime_pack(&resolved_runtime_pack.manifest),
         },
         database,
         prompt: AppCapsulePrompt {
@@ -452,7 +449,7 @@ pub fn import_app_capsule_with_adapter(
     let workspace = WorkspaceSummary {
         app_id: imported.app_id.clone(),
         name: imported.name.clone(),
-        mode: imported.mode,
+        mode: imported.mode.clone(),
         updated_at: imported.updated_at.clone(),
         root: imported.paths.root.clone(),
     };
@@ -488,14 +485,14 @@ struct CapsuleFileEntry {
 
 fn collect_generated_entries(
     generated_root: &Path,
-    runtime: RuntimeKind,
+    runtime_pack: &RuntimePackManifest,
 ) -> AppCapsuleResult<Vec<CapsuleFileEntry>> {
     if !generated_root.exists() {
         return Ok(Vec::new());
     }
 
     let mut entries = Vec::new();
-    for capsule_path in allowed_capsule_generated_paths(runtime) {
+    for capsule_path in allowed_capsule_generated_paths(runtime_pack)? {
         let relative_path = capsule_path
             .strip_prefix("source/generated/")
             .ok_or_else(|| {
@@ -786,18 +783,21 @@ fn validate_import_artifacts(
     Ok(())
 }
 
-fn validate_importable_capsule_runtime(runtime: RuntimeKind) -> AppCapsuleResult<()> {
-    if matches!(
-        runtime,
-        RuntimeKind::ReactVite
-            | RuntimeKind::ReactSqlite
-            | RuntimeKind::MarkdownKnowledge
-            | RuntimeKind::DataTable
-            | RuntimeKind::FileProcessor
-            | RuntimeKind::DesktopWidget
-    ) {
+fn validate_importable_capsule_runtime(runtime: &str) -> AppCapsuleResult<()> {
+    let requires_local_toolchain = PackManager::new()
+        .and_then(|manager| manager.resolve_runtime_packs_by_kind(runtime))
+        .map(|packs| {
+            !packs
+                .runtime
+                .manifest
+                .executor
+                .required_toolchains
+                .is_empty()
+        })
+        .unwrap_or(false);
+    if requires_local_toolchain {
         return Err(AppCapsuleError::InvalidCapsule(format!(
-            "capsule runtime '{runtime:?}' requires local sidecar execution and cannot be imported from untrusted capsules in this phase"
+            "capsule runtime '{runtime}' requires local sidecar execution and cannot be imported from untrusted capsules in this phase"
         )));
     }
 
@@ -805,10 +805,10 @@ fn validate_importable_capsule_runtime(runtime: RuntimeKind) -> AppCapsuleResult
 }
 
 fn validate_generated_file_set_for_runtime(
-    runtime: RuntimeKind,
+    runtime_pack: &RuntimePackManifest,
     files: &BTreeMap<String, Vec<u8>>,
 ) -> AppCapsuleResult<()> {
-    let allowed = allowed_capsule_generated_paths(runtime)
+    let allowed = allowed_capsule_generated_paths(runtime_pack)?
         .into_iter()
         .collect::<BTreeSet<_>>();
     let generated_files = files
@@ -823,7 +823,8 @@ fn validate_generated_file_set_for_runtime(
         .collect::<Vec<_>>();
     if !unexpected.is_empty() {
         return Err(AppCapsuleError::InvalidCapsule(format!(
-            "capsule contains generated files outside the {runtime:?} allowlist: {}",
+            "capsule contains generated files outside the {} allowlist: {}",
+            runtime_pack.runtime.kind,
             unexpected.join(", ")
         )));
     }
@@ -831,10 +832,12 @@ fn validate_generated_file_set_for_runtime(
     Ok(())
 }
 
-fn allowed_capsule_generated_paths(runtime: RuntimeKind) -> Vec<String> {
-    let prefix = generated_path_prefix_for_runtime(runtime);
-    allowed_generated_files_for_runtime(runtime)
-        .iter()
+fn allowed_capsule_generated_paths(
+    runtime_pack: &RuntimePackManifest,
+) -> AppCapsuleResult<Vec<String>> {
+    let prefix = generated_path_prefix_for_runtime_pack(runtime_pack)?;
+    Ok(allowed_generated_files_for_runtime_pack(runtime_pack)?
+        .into_iter()
         .map(|path| {
             if prefix.is_empty() {
                 format!("source/generated/{path}")
@@ -842,38 +845,53 @@ fn allowed_capsule_generated_paths(runtime: RuntimeKind) -> Vec<String> {
                 format!("source/generated/{prefix}/{path}")
             }
         })
-        .collect()
+        .collect())
 }
 
-fn generated_path_prefix_for_runtime(runtime: RuntimeKind) -> &'static str {
-    match runtime {
-        RuntimeKind::StaticHtml => "static",
-        RuntimeKind::ReactVite => "react",
-        RuntimeKind::Canvas2d => "canvas",
-        RuntimeKind::ReactSqlite
-        | RuntimeKind::AiAgentApp
-        | RuntimeKind::MarkdownKnowledge
-        | RuntimeKind::DataTable
-        | RuntimeKind::FileProcessor
-        | RuntimeKind::DesktopWidget => "",
+fn generated_path_prefix_for_runtime_pack(
+    runtime_pack: &RuntimePackManifest,
+) -> AppCapsuleResult<String> {
+    let root = runtime_pack.runtime.generated_root.as_str();
+    if root == "generated" {
+        return Ok(String::new());
     }
+    let prefix = root.strip_prefix("generated/").ok_or_else(|| {
+        AppCapsuleError::InvalidCapsule(format!(
+            "runtime generatedRoot must be generated or generated/<dir>, found {root}"
+        ))
+    })?;
+    validate_capsule_entry_path(&format!("source/generated/{prefix}/placeholder"))?;
+    Ok(prefix.to_string())
 }
 
-fn allowed_generated_files_for_runtime(runtime: RuntimeKind) -> &'static [&'static str] {
-    match runtime {
-        RuntimeKind::StaticHtml => &STATIC_HTML_ALLOWED_FILES,
-        RuntimeKind::ReactVite => &REACT_VITE_ALLOWED_FILES,
-        RuntimeKind::ReactSqlite => &REACT_SQLITE_ALLOWED_FILES,
-        RuntimeKind::AiAgentApp => &AI_AGENT_APP_ALLOWED_FILES,
-        RuntimeKind::Canvas2d => &CANVAS2D_ALLOWED_FILES,
-        RuntimeKind::MarkdownKnowledge => &MARKDOWN_KNOWLEDGE_ALLOWED_FILES,
-        RuntimeKind::DataTable => &DATA_TABLE_ALLOWED_FILES,
-        RuntimeKind::FileProcessor => &FILE_PROCESSOR_ALLOWED_FILES,
-        RuntimeKind::DesktopWidget => &DESKTOP_WIDGET_ALLOWED_FILES,
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CapsuleRuntimeEnvelopeConfig {
+    allowed_files: Vec<String>,
+}
+
+fn allowed_generated_files_for_runtime_pack(
+    runtime_pack: &RuntimePackManifest,
+) -> AppCapsuleResult<Vec<String>> {
+    let config: CapsuleRuntimeEnvelopeConfig = serde_json::from_str(&read_pack_resource_text(
+        PackKind::Runtime,
+        &runtime_pack.id,
+        &runtime_pack.version,
+        &runtime_pack.prompt_envelope,
+    )?)?;
+    if config.allowed_files.is_empty() {
+        return Err(AppCapsuleError::InvalidCapsule(format!(
+            "runtime pack {}@{} prompt envelope must declare allowedFiles",
+            runtime_pack.id, runtime_pack.version
+        )));
     }
+    for path in &config.allowed_files {
+        validate_capsule_entry_path(&format!("source/generated/{path}"))?;
+    }
+    Ok(config.allowed_files)
 }
 
-fn database_metadata(runtime: RuntimeKind, generated_paths: &[String]) -> AppCapsuleDatabase {
+fn database_metadata(runtime: &str, generated_paths: &[String]) -> AppCapsuleDatabase {
     let mut schema = Vec::new();
     let mut migrations = Vec::new();
     let mut seed = Vec::new();
@@ -892,7 +910,7 @@ fn database_metadata(runtime: RuntimeKind, generated_paths: &[String]) -> AppCap
     }
 
     AppCapsuleDatabase {
-        engine: if runtime == RuntimeKind::ReactSqlite {
+        engine: if runtime == "react-sqlite" {
             "sqlite".to_string()
         } else {
             "none".to_string()
@@ -901,7 +919,7 @@ fn database_metadata(runtime: RuntimeKind, generated_paths: &[String]) -> AppCap
         schema,
         migrations,
         seed,
-        excluded_data: if runtime == RuntimeKind::ReactSqlite {
+        excluded_data: if runtime == "react-sqlite" {
             vec!["source/generated/data/app.sqlite".to_string()]
         } else {
             Vec::new()
@@ -909,10 +927,8 @@ fn database_metadata(runtime: RuntimeKind, generated_paths: &[String]) -> AppCap
     }
 }
 
-fn ai_provider_requirements_for_runtime(
-    runtime: RuntimeKind,
-) -> Option<AppCapsuleAiProviderRequirements> {
-    if runtime != RuntimeKind::AiAgentApp {
+fn ai_provider_requirements_for_runtime(runtime: &str) -> Option<AppCapsuleAiProviderRequirements> {
+    if runtime != "ai-agent-app" {
         return None;
     }
 
@@ -1150,7 +1166,7 @@ fn validate_capsule_manifest(manifest: &AppCapsuleManifest) -> AppCapsuleResult<
 
 fn validate_ai_provider_requirements(manifest: &AppCapsuleManifest) -> AppCapsuleResult<()> {
     let Some(requirements) = &manifest.ai_provider_requirements else {
-        if manifest.runtime.kind == RuntimeKind::AiAgentApp {
+        if manifest.runtime.kind == "ai-agent-app" {
             return Err(AppCapsuleError::InvalidCapsule(
                 "AI Agent App capsule requires provider requirements metadata".to_string(),
             ));
@@ -1339,31 +1355,27 @@ fn normalized_capsule_entry_path(path: &str) -> AppCapsuleResult<String> {
     })
 }
 
-fn entry_path_for_runtime(runtime: RuntimeKind) -> &'static str {
-    match runtime {
-        RuntimeKind::StaticHtml => "source/generated/static/index.html",
-        RuntimeKind::ReactVite
-        | RuntimeKind::ReactSqlite
-        | RuntimeKind::AiAgentApp
-        | RuntimeKind::MarkdownKnowledge
-        | RuntimeKind::DataTable
-        | RuntimeKind::FileProcessor
-        | RuntimeKind::DesktopWidget => "source/generated/react/package.json",
-        RuntimeKind::Canvas2d => "source/generated/canvas/index.html",
-    }
+fn entry_path_for_runtime_pack(runtime_pack: &RuntimePackManifest) -> AppCapsuleResult<String> {
+    let prefix = generated_path_prefix_for_runtime_pack(runtime_pack)?;
+    let path = if prefix.is_empty() {
+        format!("source/generated/{}", runtime_pack.runtime.entrypoint)
+    } else {
+        format!(
+            "source/generated/{prefix}/{}",
+            runtime_pack.runtime.entrypoint
+        )
+    };
+    validate_capsule_entry_path(&path)?;
+    Ok(path)
 }
 
-fn entry_kind_for_runtime(runtime: RuntimeKind) -> &'static str {
-    match runtime {
-        RuntimeKind::StaticHtml | RuntimeKind::Canvas2d => "html",
-        RuntimeKind::DesktopWidget => "widget",
-        RuntimeKind::ReactVite
-        | RuntimeKind::ReactSqlite
-        | RuntimeKind::AiAgentApp
-        | RuntimeKind::MarkdownKnowledge
-        | RuntimeKind::DataTable
-        | RuntimeKind::FileProcessor => "react",
+fn entry_kind_for_runtime_pack(runtime_pack: &RuntimePackManifest) -> String {
+    match runtime_pack.executor.kind.as_str() {
+        "static-html" | "canvas2d" => "html",
+        "desktop-widget" => "widget",
+        _ => "react",
     }
+    .to_string()
 }
 
 fn runtime_kind_from_lockfile(lockfile: &SofvaryLockfile) -> AppCapsuleResult<RuntimeKind> {
@@ -1372,25 +1384,16 @@ fn runtime_kind_from_lockfile(lockfile: &SofvaryLockfile) -> AppCapsuleResult<Ru
             "capsule import requires exactly one runtime pack".to_string(),
         ));
     }
-    let runtime_id = lockfile
+    let (runtime_id, runtime_version) = lockfile
         .runtime_packs
-        .keys()
+        .iter()
         .next()
         .ok_or_else(|| AppCapsuleError::InvalidCapsule("missing runtime pack".to_string()))?;
-    match runtime_id.as_str() {
-        STATIC_HTML_RUNTIME_PACK_ID => Ok(RuntimeKind::StaticHtml),
-        REACT_VITE_RUNTIME_PACK_ID => Ok(RuntimeKind::ReactVite),
-        REACT_SQLITE_RUNTIME_PACK_ID => Ok(RuntimeKind::ReactSqlite),
-        AI_AGENT_APP_RUNTIME_PACK_ID => Ok(RuntimeKind::AiAgentApp),
-        CANVAS2D_RUNTIME_PACK_ID => Ok(RuntimeKind::Canvas2d),
-        MARKDOWN_KNOWLEDGE_RUNTIME_PACK_ID => Ok(RuntimeKind::MarkdownKnowledge),
-        DATA_TABLE_RUNTIME_PACK_ID => Ok(RuntimeKind::DataTable),
-        FILE_PROCESSOR_RUNTIME_PACK_ID => Ok(RuntimeKind::FileProcessor),
-        DESKTOP_WIDGET_RUNTIME_PACK_ID => Ok(RuntimeKind::DesktopWidget),
-        other => Err(AppCapsuleError::InvalidCapsule(format!(
-            "unsupported local runtime pack for import: {other}"
-        ))),
-    }
+    let pack_manager = PackManager::new()?;
+    let runtime = pack_manager
+        .resolver()
+        .resolve_runtime(runtime_id, runtime_version)?;
+    Ok(runtime.manifest.runtime.kind)
 }
 
 fn checksums_for_entries(entries: &[CapsuleFileEntry]) -> BTreeMap<String, String> {
@@ -1546,8 +1549,13 @@ fn validate_capsule_file_set(
     let imported_lockfile: SofvaryLockfile = serde_json::from_slice(lockfile_bytes)?;
     validate_manifest_matches_lockfile(&capsule_manifest, &imported_lockfile)?;
     validate_import_artifacts(&capsule_manifest, files)?;
-    validate_importable_capsule_runtime(capsule_manifest.runtime.kind)?;
-    validate_generated_file_set_for_runtime(capsule_manifest.runtime.kind, files)?;
+    validate_importable_capsule_runtime(&capsule_manifest.runtime.kind)?;
+    let pack_manager = PackManager::new_with_adapter(adapter)?;
+    let runtime_pack = pack_manager.resolver().resolve_runtime(
+        &capsule_manifest.runtime.pack.id,
+        &capsule_manifest.runtime.pack.version,
+    )?;
+    validate_generated_file_set_for_runtime(&runtime_pack.manifest, files)?;
     validate_local_pack_compatibility(&imported_lockfile, adapter)?;
 
     Ok(capsule_manifest)
@@ -1758,8 +1766,9 @@ mod tests {
         .expect("index");
     }
 
-    fn write_generated_allowlist_sample(manifest: &AppBoxManifest, runtime: RuntimeKind) {
-        for capsule_path in allowed_capsule_generated_paths(runtime) {
+    fn write_generated_allowlist_sample(manifest: &AppBoxManifest, runtime_kind: &str) {
+        let runtime_pack = runtime_pack_for_kind(runtime_kind);
+        for capsule_path in allowed_capsule_generated_paths(&runtime_pack).expect("allowed files") {
             let relative_path = capsule_path
                 .strip_prefix("source/generated/")
                 .expect("generated path");
@@ -1767,6 +1776,14 @@ mod tests {
             fs::create_dir_all(target.parent().expect("parent")).expect("parent dir");
             fs::write(target, format!("file: {capsule_path}")).expect("file");
         }
+    }
+
+    fn runtime_pack_for_kind(runtime_kind: &str) -> RuntimePackManifest {
+        crate::core::pack_manager::runtime_catalog_manifests()
+            .expect("runtime catalog")
+            .into_iter()
+            .find(|manifest| manifest.runtime.kind == runtime_kind)
+            .unwrap_or_else(|| panic!("runtime kind {runtime_kind} is available"))
     }
 
     fn rewrite_capsule_from_files(path: &Path, files: BTreeMap<String, Vec<u8>>) {
@@ -1801,7 +1818,7 @@ mod tests {
         let source = manager
             .create_workspace_for_runtime_with_adapter(
                 name.to_string(),
-                RuntimeKind::StaticHtml,
+                "static-html".to_string(),
                 adapter,
             )
             .expect("workspace");
@@ -1828,7 +1845,7 @@ mod tests {
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "Capsule Test".to_string(),
-                RuntimeKind::StaticHtml,
+                "static-html".to_string(),
                 &adapter,
             )
             .expect("workspace");
@@ -1873,7 +1890,7 @@ mod tests {
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "Allowlisted Export".to_string(),
-                RuntimeKind::StaticHtml,
+                "static-html".to_string(),
                 &adapter,
             )
             .expect("workspace");
@@ -1918,7 +1935,7 @@ mod tests {
         let source = manager
             .create_workspace_for_runtime_with_adapter(
                 "Imported App".to_string(),
-                RuntimeKind::StaticHtml,
+                "static-html".to_string(),
                 &adapter,
             )
             .expect("workspace");
@@ -1960,11 +1977,11 @@ mod tests {
         let source = manager
             .create_workspace_for_runtime_with_adapter(
                 "Executable Capsule".to_string(),
-                RuntimeKind::ReactVite,
+                "react-vite".to_string(),
                 &adapter,
             )
             .expect("workspace");
-        write_generated_allowlist_sample(&source, RuntimeKind::ReactVite);
+        write_generated_allowlist_sample(&source, "react-vite");
         let capsule_path = temp.path().join("react-vite.sfcapsule");
         export_app_capsule_with_adapter(
             &manager,
@@ -2002,7 +2019,7 @@ mod tests {
                 .expect("lockfile json");
         lockfile
             .runtime_packs
-            .insert(STATIC_HTML_RUNTIME_PACK_ID.to_string(), "9.9.9".to_string());
+            .insert(manifest.runtime.pack.id.clone(), "9.9.9".to_string());
         manifest.runtime.pack.version = "9.9.9".to_string();
         let lockfile_bytes = serde_json::to_vec_pretty(&lockfile).expect("lockfile bytes");
         manifest.lockfile.sha256 = Some(sha256_hex(&lockfile_bytes));
@@ -2104,7 +2121,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("outside the StaticHtml allowlist"));
+            .contains("outside the static-html allowlist"));
     }
 
     #[test]
@@ -2115,7 +2132,7 @@ mod tests {
         let source = manager
             .create_workspace_for_runtime_with_adapter(
                 "Checksum".to_string(),
-                RuntimeKind::StaticHtml,
+                "static-html".to_string(),
                 &adapter,
             )
             .expect("workspace");
@@ -2137,7 +2154,7 @@ mod tests {
             },
             created_at: source.updated_at.clone(),
             runtime: AppCapsuleRuntime {
-                kind: RuntimeKind::StaticHtml,
+                kind: "static-html".to_string(),
                 pack: single_locked_pack(&lockfile.runtime_packs, "runtime").expect("runtime"),
                 generated_root: "source/generated".to_string(),
             },
@@ -2234,7 +2251,7 @@ mod tests {
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "Secret".to_string(),
-                RuntimeKind::StaticHtml,
+                "static-html".to_string(),
                 &adapter,
             )
             .expect("workspace");
@@ -2278,11 +2295,11 @@ mod tests {
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "SQLite".to_string(),
-                RuntimeKind::ReactSqlite,
+                "react-sqlite".to_string(),
                 &adapter,
             )
             .expect("workspace");
-        write_generated_allowlist_sample(&manifest, RuntimeKind::ReactSqlite);
+        write_generated_allowlist_sample(&manifest, "react-sqlite");
         fs::write(manifest.paths.generated.join("data/app.sqlite"), b"real db").expect("db");
         fs::write(
             manifest.paths.generated.join("data/local-cache.json"),
@@ -2420,8 +2437,8 @@ mod tests {
     #[test]
     fn ai_agent_capsule_requires_provider_requirements_metadata() {
         let mut manifest = minimal_capsule_manifest_for_validation();
-        manifest.runtime.kind = RuntimeKind::AiAgentApp;
-        manifest.runtime.pack.id = AI_AGENT_APP_RUNTIME_PACK_ID.to_string();
+        manifest.runtime.kind = "ai-agent-app".to_string();
+        manifest.runtime.pack.id = "test.runtime.ai-agent-app".to_string();
 
         let missing =
             validate_capsule_manifest(&manifest).expect_err("missing provider requirements");
@@ -2445,8 +2462,8 @@ mod tests {
     #[test]
     fn ai_agent_capsule_rejects_secret_included_requirements() {
         let mut manifest = minimal_capsule_manifest_for_validation();
-        manifest.runtime.kind = RuntimeKind::AiAgentApp;
-        manifest.runtime.pack.id = AI_AGENT_APP_RUNTIME_PACK_ID.to_string();
+        manifest.runtime.kind = "ai-agent-app".to_string();
+        manifest.runtime.pack.id = "test.runtime.ai-agent-app".to_string();
         manifest.ai_provider_requirements = Some(AppCapsuleAiProviderRequirements {
             requirements: vec![AppCapsuleAiProviderRequirement {
                 provider: "openai".to_string(),
@@ -2481,7 +2498,7 @@ mod tests {
             },
             created_at: "2026-06-05T00:00:00Z".to_string(),
             runtime: AppCapsuleRuntime {
-                kind: RuntimeKind::StaticHtml,
+                kind: "static-html".to_string(),
                 pack: runtime_pack,
                 generated_root: "source/generated".to_string(),
             },

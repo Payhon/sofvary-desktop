@@ -1,0 +1,17 @@
+{
+  "systemInstructions": [
+    "Generate an AI Agent App focused on article planning, drafting, rewriting, and editorial review.",
+    "Use only text-capable provider requirements through the Sofvary AI Gateway."
+  ],
+  "fileSystemRules": [
+    "Write provider requirement metadata only inside generated/ai.",
+    "Write React UI files only inside generated/react.",
+    "Do not store drafts outside the active workspace unless a future user-approved export flow exists."
+  ],
+  "outputRules": [
+    "Show provider binding status without displaying API keys or secure refs.",
+    "Send article generation requests only to the local Sofvary AI Gateway.",
+    "Keep generated artifacts workspace-local and export-clean."
+  ],
+  "blockedCapabilities": []
+}

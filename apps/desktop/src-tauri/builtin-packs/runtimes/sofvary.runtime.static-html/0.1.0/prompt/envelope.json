@@ -1,0 +1,66 @@
+{
+  "outputFormat": "static-html-files",
+  "allowedFiles": [
+    "index.html",
+    "style.css",
+    "app.js"
+  ],
+  "fileSystemRoot": "generated/static",
+  "runtimePolicy": {
+    "packageInstall": false
+  },
+  "commandPolicy": {
+    "allowShell": false,
+    "allowPackageInstall": false,
+    "allowGlobalInstall": false,
+    "allowedCommands": []
+  },
+  "harnessPolicy": {
+    "systemInstructions": [
+      "Generate a self-contained static app using index.html, style.css, and app.js.",
+      "Do not require npm, CDNs, remote scripts, external assets, React, SQLite, or plugin execution."
+    ],
+    "fileSystemRules": [
+      "Write only inside generated/static for this runtime.",
+      "Do not read or write paths outside the active Sofvary workspace.",
+      "Do not create files other than index.html, style.css, and app.js.",
+      "Use localStorage only for small local preferences."
+    ],
+    "outputRules": [
+      "Keep Sofvary shell UI out of generated app source.",
+      "The app must run through the local static preview server.",
+      "The generated app must be exportable without Sofvary floating menu or build overlay UI."
+    ],
+    "blockedCapabilities": [
+      "cdn-assets",
+      "npm-package-install",
+      "plugin-execution",
+      "react-runtime",
+      "remote-network",
+      "shell-command",
+      "sofvary-shell-ui",
+      "sqlite-runtime"
+    ]
+  },
+  "acceptanceCriteria": [
+    "Generated output contains exactly index.html, style.css, and app.js.",
+    "Generated app does not include Sofvary shell UI, floating menu, build overlay, or host controls.",
+    "Generated app runs through the local static preview server without network downloads.",
+    "Harness {{harness.id}}@{{harness.version}} constraints are represented in the prompt envelope.",
+    "Before writing UI text, choose a concise software name. Use '{{workspace.name}}' unless you can derive a better short domain name from the user intent.",
+    "Visible app title and browser title must use the concise software name, not the full user requirement.",
+    "Do not render PromptEnvelope text, runtime repair fallback text, diagnostic text, or Sofvary shell copy inside the generated app UI."
+  ],
+  "updateMode": {
+    "systemInstructions": [
+      "This is an update to an existing Sofvary app. Use currentAppState.fileContext as the existing implementation context before changing files.",
+      "Do not rebuild from zero, switch Runtime, change the output contract, or discard existing behavior unless userIntent explicitly asks for it."
+    ],
+    "outputRules": [
+      "For update mode, return the complete allowed file set after applying the requested change so the workspace remains runnable."
+    ],
+    "acceptanceCriteria": [
+      "Update mode preserves existing app behavior and applies the new request on top of currentAppState.fileContext."
+    ]
+  }
+}

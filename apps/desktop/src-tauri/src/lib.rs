@@ -509,7 +509,7 @@ async fn run_generated_app(
     tauri::async_runtime::spawn_blocking(move || {
         let runtime_selection =
             runtime_selection_for_payload(&payload.requirement, payload.runtime_kind);
-        ensure_runtime_environment_for_runtime(runtime_selection.runtime_kind)?;
+        ensure_runtime_environment_for_runtime(&runtime_selection.runtime_kind)?;
         let agent_config = agent_store
             .resolve_agent(payload.agent_id.as_deref())
             .map_err(|error| error.to_string())?;
@@ -551,13 +551,13 @@ fn start_build_thread(
     let mode = payload.mode.unwrap_or_default();
     let runtime_selection =
         runtime_selection_for_payload(&payload.requirement, payload.runtime_kind);
-    let runtime_kind = runtime_selection.runtime_kind;
+    let runtime_kind = runtime_selection.runtime_kind.clone();
     let thread = state
         .build_thread_store
         .create(CreateBuildThreadRequest {
             title: build_thread_title(&payload.requirement),
             prompt: payload.requirement.clone(),
-            runtime_kind,
+            runtime_kind: runtime_kind.clone(),
             runtime_mode: mode,
             agent_id: agent_config.id.clone(),
             agent_mode,
@@ -1561,7 +1561,7 @@ fn mark_build_thread_preview_blocked(
     };
 
     let issue = runtime_preview_issue_from_diagnostic(
-        assets.runtime_kind,
+        assets.runtime_kind.clone(),
         summary.clone(),
         diagnostic.clone(),
         source_detail.clone(),
@@ -2467,14 +2467,14 @@ fn preview_policy(
                     workspace_root: PathBuf::from("."),
                     runtime_kind: format!(
                         "{}:{}",
-                        runtime_kind_label(runtime_kind),
+                        runtime_kind_label(&runtime_kind),
                         runtime_mode_label(runtime_mode)
                     ),
                     bind: "127.0.0.1".to_string(),
                     network: "local-only".to_string(),
                 },
             )];
-            if runtime_requires_dependency_install(runtime_kind) {
+            if runtime_requires_dependency_install(&runtime_kind) {
                 decisions.extend(dependency_install_policy_preview_specs().into_iter().map(
                     |command| {
                         engine.evaluate_dependency_install(PolicyCommandRequest {
@@ -2718,18 +2718,8 @@ fn test_configured_agent(
     ))
 }
 
-fn runtime_kind_label(runtime_kind: RuntimeKind) -> &'static str {
-    match runtime_kind {
-        RuntimeKind::StaticHtml => "static-html",
-        RuntimeKind::ReactVite => "react-vite",
-        RuntimeKind::ReactSqlite => "react-sqlite",
-        RuntimeKind::AiAgentApp => "ai-agent-app",
-        RuntimeKind::Canvas2d => "canvas2d",
-        RuntimeKind::MarkdownKnowledge => "markdown-knowledge",
-        RuntimeKind::DataTable => "data-table",
-        RuntimeKind::FileProcessor => "file-processor",
-        RuntimeKind::DesktopWidget => "desktop-widget",
-    }
+fn runtime_kind_label(runtime_kind: &str) -> &str {
+    runtime_kind
 }
 
 fn runtime_selection_for_payload(
@@ -2747,14 +2737,14 @@ fn runtime_selection_message(selection: &RuntimeIntentSelection) -> String {
         crate::core::runtime_selector::RuntimeSelectionSource::Automatic => format!(
             "Sofvary selected {} ({}) with {:.0}% confidence. {}",
             selection.software_type,
-            runtime_kind_label(selection.runtime_kind),
+            runtime_kind_label(&selection.runtime_kind),
             selection.confidence * 100.0,
             selection.reason
         ),
         crate::core::runtime_selector::RuntimeSelectionSource::Manual => format!(
             "Using manually selected runtime: {} ({}).",
             selection.software_type,
-            runtime_kind_label(selection.runtime_kind)
+            runtime_kind_label(&selection.runtime_kind)
         ),
     }
 }
@@ -2766,20 +2756,22 @@ fn runtime_mode_label(runtime_mode: RuntimeMode) -> &'static str {
     }
 }
 
-fn runtime_requires_dependency_install(runtime_kind: RuntimeKind) -> bool {
-    matches!(
-        runtime_kind,
-        RuntimeKind::ReactVite
-            | RuntimeKind::ReactSqlite
-            | RuntimeKind::AiAgentApp
-            | RuntimeKind::MarkdownKnowledge
-            | RuntimeKind::DataTable
-            | RuntimeKind::FileProcessor
-            | RuntimeKind::DesktopWidget
-    )
+fn runtime_requires_dependency_install(runtime_kind: &str) -> bool {
+    PackManager::new()
+        .and_then(|manager| manager.resolve_runtime_packs_by_kind(runtime_kind))
+        .map(|packs| {
+            packs
+                .runtime
+                .manifest
+                .executor
+                .required_toolchains
+                .iter()
+                .any(|toolchain| toolchain == "nodejs")
+        })
+        .unwrap_or(false)
 }
 
-fn ensure_runtime_environment_for_runtime(runtime_kind: RuntimeKind) -> Result<(), String> {
+fn ensure_runtime_environment_for_runtime(runtime_kind: &str) -> Result<(), String> {
     if !runtime_requires_dependency_install(runtime_kind) {
         return Ok(());
     }

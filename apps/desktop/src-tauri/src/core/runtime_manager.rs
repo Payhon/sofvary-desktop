@@ -3,31 +3,21 @@ use crate::core::agent_gateway::{
     summarize_agent_events, AgentEvent, AgentEventSink, AgentGateway, AgentGatewayError,
     AgentRunContext, AgentSession, ConfiguredAgentAdapter, MockAgentAdapter,
 };
-use crate::core::ai_agent_app_runtime::{
-    AiAgentAppRuntime, AiAgentAppRuntimeError, AiAgentAppRuntimeServer,
-};
+use crate::core::builtin_resources::get_builtin_resource;
 use crate::core::canvas2d_runtime::{Canvas2dRuntime, Canvas2dRuntimeError, Canvas2dRuntimeServer};
-use crate::core::data_table_runtime::{
-    DataTableRuntime, DataTableRuntimeError, DataTableRuntimeServer,
-};
-use crate::core::desktop_widget_runtime::{
-    DesktopWidgetRuntime, DesktopWidgetRuntimeError, DesktopWidgetRuntimeServer,
-};
-use crate::core::file_processor_runtime::{
-    FileProcessorRuntime, FileProcessorRuntimeError, FileProcessorRuntimeServer,
-};
 use crate::core::gateway_uni_event::{GatewayUniEventEmitter, GatewayUniEventSink};
 use crate::core::harness_engine::{
     summarize_prompt_envelope, HarnessEngine, HarnessEngineError, PromptEnvelope,
     PromptEnvelopeSummary,
 };
-use crate::core::markdown_knowledge_runtime::{
-    MarkdownKnowledgeRuntime, MarkdownKnowledgeRuntimeError, MarkdownKnowledgeRuntimeServer,
-};
-use crate::core::pack_manager::{PackError, PackManager};
+use crate::core::pack_manager::{PackError, PackManager, RuntimePackResolution};
 use crate::core::pack_types::{HarnessPackManifest, RuntimePackManifest};
 use crate::core::policy_engine::{PolicyEngine, PolicyError};
 use crate::core::policy_types::{PolicyApprovalSet, PolicyRuntimeStartRequest};
+use crate::core::prompt_template::render_template;
+use crate::core::react_project_runtime::{
+    ReactProjectRuntime, ReactProjectRuntimeError, ReactProjectRuntimeServer,
+};
 use crate::core::react_sqlite_runtime::{
     ReactSqliteRuntime, ReactSqliteRuntimeError, ReactSqliteRuntimeServer,
 };
@@ -35,9 +25,9 @@ use crate::core::react_vite_runtime::{
     ReactViteRuntime, ReactViteRuntimeError, ReactViteRuntimeServer,
 };
 use crate::core::runtime_diagnostic::{
-    diagnostic_from_file_processor_error, diagnostic_from_react_project_error,
-    diagnostic_from_react_sqlite_error, diagnostic_from_react_vite_error, RuntimeDiagnostic,
-    RuntimeDiagnosticCategory, RuntimeDiagnosticRepairTarget,
+    diagnostic_from_react_project_error, diagnostic_from_react_sqlite_error,
+    diagnostic_from_react_vite_error, RuntimeDiagnostic, RuntimeDiagnosticCategory,
+    RuntimeDiagnosticRepairTarget,
 };
 use crate::core::software_naming::suggest_software_name;
 use crate::core::static_html_runtime::{
@@ -97,18 +87,10 @@ pub enum RuntimeManagerError {
     ReactViteRuntime(#[from] ReactViteRuntimeError),
     #[error("react-sqlite runtime error: {0}")]
     ReactSqliteRuntime(#[from] ReactSqliteRuntimeError),
-    #[error("ai-agent-app runtime error: {0}")]
-    AiAgentAppRuntime(AiAgentAppRuntimeError),
+    #[error("react-project runtime error: {0}")]
+    ReactProjectRuntime(#[from] ReactProjectRuntimeError),
     #[error("canvas2d runtime error: {0}")]
     Canvas2dRuntime(#[from] Canvas2dRuntimeError),
-    #[error("markdown-knowledge runtime error: {0}")]
-    MarkdownKnowledgeRuntime(MarkdownKnowledgeRuntimeError),
-    #[error("data-table runtime error: {0}")]
-    DataTableRuntime(DataTableRuntimeError),
-    #[error("file-processor runtime error: {0}")]
-    FileProcessorRuntime(#[from] FileProcessorRuntimeError),
-    #[error("desktop-widget runtime error: {0}")]
-    DesktopWidgetRuntime(DesktopWidgetRuntimeError),
     #[error("harness engine error: {0}")]
     HarnessEngine(#[from] HarnessEngineError),
     #[error("agent gateway error: {0}")]
@@ -134,6 +116,8 @@ pub enum RuntimeManagerError {
     InvalidImportedWorkspace(String),
     #[error("continuation workspace is invalid: {0}")]
     InvalidContinuation(String),
+    #[error("unsupported runtime kind '{0}'")]
+    UnsupportedRuntimeKind(String),
 }
 
 pub struct RuntimeManager {
@@ -141,12 +125,7 @@ pub struct RuntimeManager {
     static_runtime: StaticHtmlRuntime,
     react_vite_runtime: ReactViteRuntime,
     react_sqlite_runtime: ReactSqliteRuntime,
-    ai_agent_app_runtime: AiAgentAppRuntime,
     canvas2d_runtime: Canvas2dRuntime,
-    markdown_knowledge_runtime: MarkdownKnowledgeRuntime,
-    data_table_runtime: DataTableRuntime,
-    file_processor_runtime: FileProcessorRuntime,
-    desktop_widget_runtime: DesktopWidgetRuntime,
     active_apps: Mutex<HashMap<String, ActiveRuntimeServer>>,
 }
 
@@ -154,12 +133,8 @@ enum ActiveRuntimeServer {
     Static(StaticRuntimeServer),
     ReactVite(ReactViteRuntimeServer),
     ReactSqlite(ReactSqliteRuntimeServer),
-    AiAgentApp(AiAgentAppRuntimeServer),
+    ReactProject(ReactProjectRuntimeServer),
     Canvas2d(Canvas2dRuntimeServer),
-    MarkdownKnowledge(MarkdownKnowledgeRuntimeServer),
-    DataTable(DataTableRuntimeServer),
-    FileProcessor(FileProcessorRuntimeServer),
-    DesktopWidget(DesktopWidgetRuntimeServer),
 }
 
 impl Drop for ActiveRuntimeServer {
@@ -168,12 +143,8 @@ impl Drop for ActiveRuntimeServer {
             Self::Static(server) => server.stop(),
             Self::ReactVite(server) => server.stop(),
             Self::ReactSqlite(server) => server.stop(),
-            Self::AiAgentApp(server) => server.stop(),
+            Self::ReactProject(server) => server.stop(),
             Self::Canvas2d(server) => server.stop(),
-            Self::MarkdownKnowledge(server) => server.stop(),
-            Self::DataTable(server) => server.stop(),
-            Self::FileProcessor(server) => server.stop(),
-            Self::DesktopWidget(server) => server.stop(),
         }
     }
 }
@@ -196,12 +167,7 @@ impl RuntimeManager {
             static_runtime: StaticHtmlRuntime::new(),
             react_vite_runtime: ReactViteRuntime::new(),
             react_sqlite_runtime: ReactSqliteRuntime::new(),
-            ai_agent_app_runtime: AiAgentAppRuntime::new(),
             canvas2d_runtime: Canvas2dRuntime::new(),
-            markdown_knowledge_runtime: MarkdownKnowledgeRuntime::new(),
-            data_table_runtime: DataTableRuntime::new(),
-            file_processor_runtime: FileProcessorRuntime::new(),
-            desktop_widget_runtime: DesktopWidgetRuntime::new(),
             active_apps: Mutex::new(HashMap::new()),
         }
     }
@@ -213,7 +179,7 @@ impl RuntimeManager {
     ) -> Result<RuntimePreview, RuntimeManagerError> {
         self.build_and_preview_app(
             requirement,
-            RuntimeKind::StaticHtml,
+            "static-html".to_string(),
             RuntimeMode::Dev,
             workspace_manager,
         )
@@ -358,70 +324,53 @@ impl RuntimeManager {
         approvals: &PolicyApprovalSet,
         agent_selection: &RuntimeAgentSelection,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
-        match runtime_kind {
-            RuntimeKind::StaticHtml => self.build_and_preview_static_app_inner(
+        let pack_manager = PackManager::new()?;
+        let packs = pack_manager.resolve_runtime_packs_by_kind(&runtime_kind)?;
+        let executor_kind = packs.runtime.manifest.executor.kind.clone();
+        match executor_kind.as_str() {
+            "static-html" => self.build_and_preview_static_app_inner(
                 requirement,
                 runtime_mode,
                 workspace_manager,
                 approvals,
                 agent_selection,
+                packs,
             ),
-            RuntimeKind::ReactVite => self.build_and_preview_react_vite_app(
+            "react-vite" => self.build_and_preview_react_vite_app(
                 requirement,
                 runtime_mode,
                 workspace_manager,
                 approvals,
                 agent_selection,
+                packs,
             ),
-            RuntimeKind::ReactSqlite => self.build_and_preview_react_sqlite_app(
+            "react-sqlite" => self.build_and_preview_react_sqlite_app(
                 requirement,
                 runtime_mode,
                 workspace_manager,
                 approvals,
                 agent_selection,
+                packs,
             ),
-            RuntimeKind::AiAgentApp => self.build_and_preview_ai_agent_app(
+            "react-project" => self.build_and_preview_react_project_app(
                 requirement,
                 runtime_mode,
                 workspace_manager,
                 approvals,
                 agent_selection,
+                packs,
             ),
-            RuntimeKind::Canvas2d => self.build_and_preview_canvas2d_app(
+            "canvas2d" => self.build_and_preview_canvas2d_app(
                 requirement,
                 runtime_mode,
                 workspace_manager,
                 approvals,
                 agent_selection,
+                packs,
             ),
-            RuntimeKind::MarkdownKnowledge => self.build_and_preview_markdown_knowledge_app(
-                requirement,
-                runtime_mode,
-                workspace_manager,
-                approvals,
-                agent_selection,
-            ),
-            RuntimeKind::DataTable => self.build_and_preview_data_table_app(
-                requirement,
-                runtime_mode,
-                workspace_manager,
-                approvals,
-                agent_selection,
-            ),
-            RuntimeKind::FileProcessor => self.build_and_preview_file_processor_app(
-                requirement,
-                runtime_mode,
-                workspace_manager,
-                approvals,
-                agent_selection,
-            ),
-            RuntimeKind::DesktopWidget => self.build_and_preview_desktop_widget_app(
-                requirement,
-                runtime_mode,
-                workspace_manager,
-                approvals,
-                agent_selection,
-            ),
+            other => Err(RuntimeManagerError::UnsupportedRuntimeKind(format!(
+                "{runtime_kind} uses unsupported executor {other}"
+            ))),
         }
     }
 
@@ -436,8 +385,8 @@ impl RuntimeManager {
         approvals: &PolicyApprovalSet,
         agent_selection: &RuntimeAgentSelection,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
-        match manifest.mode {
-            RuntimeKind::StaticHtml => self.build_existing_static_workspace(
+        match runtime_pack.executor.kind.as_str() {
+            "static-html" => self.build_existing_static_workspace(
                 requirement,
                 manifest,
                 runtime_mode,
@@ -447,7 +396,7 @@ impl RuntimeManager {
                 approvals,
                 agent_selection,
             ),
-            RuntimeKind::ReactVite => self.build_existing_react_vite_workspace(
+            "react-vite" => self.build_existing_react_vite_workspace(
                 requirement,
                 manifest,
                 runtime_mode,
@@ -457,7 +406,7 @@ impl RuntimeManager {
                 approvals,
                 agent_selection,
             ),
-            RuntimeKind::ReactSqlite => self.build_existing_react_sqlite_workspace(
+            "react-sqlite" => self.build_existing_react_sqlite_workspace(
                 requirement,
                 manifest,
                 runtime_mode,
@@ -467,7 +416,7 @@ impl RuntimeManager {
                 approvals,
                 agent_selection,
             ),
-            RuntimeKind::AiAgentApp => self.build_existing_ai_agent_app_workspace(
+            "react-project" => self.build_existing_react_project_workspace(
                 requirement,
                 manifest,
                 runtime_mode,
@@ -477,7 +426,7 @@ impl RuntimeManager {
                 approvals,
                 agent_selection,
             ),
-            RuntimeKind::Canvas2d => self.build_existing_canvas2d_workspace(
+            "canvas2d" => self.build_existing_canvas2d_workspace(
                 requirement,
                 manifest,
                 runtime_mode,
@@ -487,46 +436,10 @@ impl RuntimeManager {
                 approvals,
                 agent_selection,
             ),
-            RuntimeKind::MarkdownKnowledge => self.build_existing_markdown_knowledge_workspace(
-                requirement,
-                manifest,
-                runtime_mode,
-                workspace_manager,
-                runtime_pack,
-                harness_pack,
-                approvals,
-                agent_selection,
-            ),
-            RuntimeKind::DataTable => self.build_existing_data_table_workspace(
-                requirement,
-                manifest,
-                runtime_mode,
-                workspace_manager,
-                runtime_pack,
-                harness_pack,
-                approvals,
-                agent_selection,
-            ),
-            RuntimeKind::FileProcessor => self.build_existing_file_processor_workspace(
-                requirement,
-                manifest,
-                runtime_mode,
-                workspace_manager,
-                runtime_pack,
-                harness_pack,
-                approvals,
-                agent_selection,
-            ),
-            RuntimeKind::DesktopWidget => self.build_existing_desktop_widget_workspace(
-                requirement,
-                manifest,
-                runtime_mode,
-                workspace_manager,
-                runtime_pack,
-                harness_pack,
-                approvals,
-                agent_selection,
-            ),
+            other => Err(RuntimeManagerError::UnsupportedRuntimeKind(format!(
+                "{} uses unsupported executor {other}",
+                runtime_pack.runtime.kind
+            ))),
         }
     }
 
@@ -578,8 +491,8 @@ impl RuntimeManager {
         let (runtime_pack, harness_pack) =
             resolve_single_workspace_runtime_and_harness(&pack_manager, &lockfile)?;
 
-        match manifest.mode {
-            RuntimeKind::StaticHtml => self.preview_existing_static_workspace(
+        match runtime_pack.executor.kind.as_str() {
+            "static-html" => self.preview_existing_static_workspace(
                 manifest,
                 runtime_mode,
                 workspace_manager,
@@ -587,7 +500,7 @@ impl RuntimeManager {
                 &harness_pack,
                 approvals,
             ),
-            RuntimeKind::ReactVite => self.preview_existing_react_vite_workspace(
+            "react-vite" => self.preview_existing_react_vite_workspace(
                 manifest,
                 runtime_mode,
                 workspace_manager,
@@ -595,7 +508,7 @@ impl RuntimeManager {
                 &harness_pack,
                 approvals,
             ),
-            RuntimeKind::ReactSqlite => self.preview_existing_react_sqlite_workspace(
+            "react-sqlite" => self.preview_existing_react_sqlite_workspace(
                 manifest,
                 runtime_mode,
                 workspace_manager,
@@ -603,7 +516,7 @@ impl RuntimeManager {
                 &harness_pack,
                 approvals,
             ),
-            RuntimeKind::AiAgentApp => self.preview_existing_ai_agent_app_workspace(
+            "react-project" => self.preview_existing_react_project_workspace(
                 manifest,
                 runtime_mode,
                 workspace_manager,
@@ -611,7 +524,7 @@ impl RuntimeManager {
                 &harness_pack,
                 approvals,
             ),
-            RuntimeKind::Canvas2d => self.preview_existing_canvas2d_workspace(
+            "canvas2d" => self.preview_existing_canvas2d_workspace(
                 manifest,
                 runtime_mode,
                 workspace_manager,
@@ -619,38 +532,10 @@ impl RuntimeManager {
                 &harness_pack,
                 approvals,
             ),
-            RuntimeKind::MarkdownKnowledge => self.preview_existing_markdown_knowledge_workspace(
-                manifest,
-                runtime_mode,
-                workspace_manager,
-                &runtime_pack,
-                &harness_pack,
-                approvals,
-            ),
-            RuntimeKind::DataTable => self.preview_existing_data_table_workspace(
-                manifest,
-                runtime_mode,
-                workspace_manager,
-                &runtime_pack,
-                &harness_pack,
-                approvals,
-            ),
-            RuntimeKind::FileProcessor => self.preview_existing_file_processor_workspace(
-                manifest,
-                runtime_mode,
-                workspace_manager,
-                &runtime_pack,
-                &harness_pack,
-                approvals,
-            ),
-            RuntimeKind::DesktopWidget => self.preview_existing_desktop_widget_workspace(
-                manifest,
-                runtime_mode,
-                workspace_manager,
-                &runtime_pack,
-                &harness_pack,
-                approvals,
-            ),
+            other => Err(RuntimeManagerError::UnsupportedRuntimeKind(format!(
+                "{} uses unsupported executor {other}",
+                runtime_pack.runtime.kind
+            ))),
         }
     }
 
@@ -671,13 +556,17 @@ impl RuntimeManager {
         workspace_manager: &WorkspaceManager,
         approvals: &PolicyApprovalSet,
         agent_selection: &RuntimeAgentSelection,
+        packs: RuntimePackResolution,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let pack_manager = PackManager::new()?;
-        let packs = pack_manager.resolve_static_html_packs()?;
         let name = derive_app_name(&requirement);
-        let manifest =
-            workspace_manager.create_workspace_for_runtime(name, RuntimeKind::StaticHtml)?;
-        let prompt_envelope = self.harness_engine.create_static_html_envelope(
+        let adapter = current_adapter();
+        let manifest = workspace_manager.create_workspace_for_resolved_packs(
+            name,
+            packs.runtime.clone(),
+            packs.harness.clone(),
+            adapter.as_ref(),
+        )?;
+        let prompt_envelope = self.harness_engine.create_envelope(
             &requirement,
             &manifest,
             &packs.runtime.manifest,
@@ -691,7 +580,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
         )?;
-        self.enforce_runtime_start(&manifest, "static-html", approvals)?;
+        self.enforce_runtime_start(&manifest, &packs.runtime.manifest.runtime.kind, approvals)?;
         let server = self
             .static_runtime
             .start_workspace_with_envelope(&manifest, &prompt_envelope)?;
@@ -728,7 +617,7 @@ impl RuntimeManager {
 
         Ok(RuntimePreview {
             app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::StaticHtml,
+            runtime_kind: packs.runtime.manifest.runtime.kind.clone(),
             runtime_mode,
             preview_url: preview.preview_url,
             logs,
@@ -746,7 +635,7 @@ impl RuntimeManager {
         harness_pack: &HarnessPackManifest,
         approvals: &PolicyApprovalSet,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_static_html_envelope(
+        let prompt_envelope = self.harness_engine.create_envelope(
             "Preview imported app capsule",
             &manifest,
             runtime_pack,
@@ -774,7 +663,7 @@ impl RuntimeManager {
 
         Ok(RuntimePreview {
             app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::StaticHtml,
+            runtime_kind: "static-html".to_string(),
             runtime_mode,
             preview_url: preview.preview_url,
             logs,
@@ -790,13 +679,17 @@ impl RuntimeManager {
         workspace_manager: &WorkspaceManager,
         approvals: &PolicyApprovalSet,
         agent_selection: &RuntimeAgentSelection,
+        packs: RuntimePackResolution,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let pack_manager = PackManager::new()?;
-        let packs = pack_manager.resolve_react_vite_packs()?;
         let name = derive_app_name(&requirement);
-        let manifest =
-            workspace_manager.create_workspace_for_runtime(name, RuntimeKind::ReactVite)?;
-        let prompt_envelope = self.harness_engine.create_react_vite_envelope(
+        let adapter = current_adapter();
+        let manifest = workspace_manager.create_workspace_for_resolved_packs(
+            name,
+            packs.runtime.clone(),
+            packs.harness.clone(),
+            adapter.as_ref(),
+        )?;
+        let prompt_envelope = self.harness_engine.create_envelope(
             &requirement,
             &manifest,
             &packs.runtime.manifest,
@@ -810,7 +703,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
         )?;
-        self.enforce_runtime_start(&manifest, "react-vite", approvals)?;
+        self.enforce_runtime_start(&manifest, &packs.runtime.manifest.runtime.kind, approvals)?;
         let (server, agent_session) = self.start_runtime_with_repair(
             &manifest,
             &requirement,
@@ -830,10 +723,12 @@ impl RuntimeManager {
                         approvals,
                     )
             },
-            |error| diagnostic_from_react_vite_error(RuntimeKind::ReactVite, error),
+            |error| {
+                diagnostic_from_react_vite_error(packs.runtime.manifest.runtime.kind.clone(), error)
+            },
             RuntimeManagerError::ReactViteRuntime,
             |repair_prompt| {
-                Ok(self.harness_engine.create_react_vite_envelope(
+                Ok(self.harness_engine.create_envelope(
                     repair_prompt,
                     &manifest,
                     &packs.runtime.manifest,
@@ -877,7 +772,7 @@ impl RuntimeManager {
 
         Ok(RuntimePreview {
             app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::ReactVite,
+            runtime_kind: packs.runtime.manifest.runtime.kind.clone(),
             runtime_mode,
             preview_url: preview.preview_url,
             logs,
@@ -895,7 +790,7 @@ impl RuntimeManager {
         harness_pack: &HarnessPackManifest,
         approvals: &PolicyApprovalSet,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_react_vite_envelope(
+        let prompt_envelope = self.harness_engine.create_envelope(
             "Preview imported app capsule",
             &manifest,
             runtime_pack,
@@ -932,7 +827,7 @@ impl RuntimeManager {
 
         Ok(RuntimePreview {
             app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::ReactVite,
+            runtime_kind: "react-vite".to_string(),
             runtime_mode,
             preview_url: preview.preview_url,
             logs,
@@ -948,13 +843,17 @@ impl RuntimeManager {
         workspace_manager: &WorkspaceManager,
         approvals: &PolicyApprovalSet,
         agent_selection: &RuntimeAgentSelection,
+        packs: RuntimePackResolution,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let pack_manager = PackManager::new()?;
-        let packs = pack_manager.resolve_react_sqlite_packs()?;
         let name = derive_app_name(&requirement);
-        let manifest =
-            workspace_manager.create_workspace_for_runtime(name, RuntimeKind::ReactSqlite)?;
-        let prompt_envelope = self.harness_engine.create_react_sqlite_envelope(
+        let adapter = current_adapter();
+        let manifest = workspace_manager.create_workspace_for_resolved_packs(
+            name,
+            packs.runtime.clone(),
+            packs.harness.clone(),
+            adapter.as_ref(),
+        )?;
+        let prompt_envelope = self.harness_engine.create_envelope(
             &requirement,
             &manifest,
             &packs.runtime.manifest,
@@ -968,7 +867,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
         )?;
-        self.enforce_runtime_start(&manifest, "react-sqlite", approvals)?;
+        self.enforce_runtime_start(&manifest, &packs.runtime.manifest.runtime.kind, approvals)?;
         let (server, agent_session) = self.start_react_sqlite_runtime_with_repair(
             &manifest,
             &requirement,
@@ -1017,7 +916,7 @@ impl RuntimeManager {
 
         Ok(RuntimePreview {
             app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::ReactSqlite,
+            runtime_kind: packs.runtime.manifest.runtime.kind.clone(),
             runtime_mode,
             preview_url: preview.preview_url,
             logs,
@@ -1035,7 +934,7 @@ impl RuntimeManager {
         harness_pack: &HarnessPackManifest,
         approvals: &PolicyApprovalSet,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_react_sqlite_envelope(
+        let prompt_envelope = self.harness_engine.create_envelope(
             "Preview imported app capsule",
             &manifest,
             runtime_pack,
@@ -1073,7 +972,7 @@ impl RuntimeManager {
 
         Ok(RuntimePreview {
             app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::ReactSqlite,
+            runtime_kind: "react-sqlite".to_string(),
             runtime_mode,
             preview_url: preview.preview_url,
             logs,
@@ -1082,20 +981,79 @@ impl RuntimeManager {
         })
     }
 
-    fn build_and_preview_ai_agent_app(
+    fn preview_existing_react_project_workspace(
+        &self,
+        manifest: AppBoxManifest,
+        runtime_mode: RuntimeMode,
+        _workspace_manager: &WorkspaceManager,
+        runtime_pack: &RuntimePackManifest,
+        harness_pack: &HarnessPackManifest,
+        approvals: &PolicyApprovalSet,
+    ) -> Result<RuntimePreview, RuntimeManagerError> {
+        let prompt_envelope = self.harness_engine.create_envelope(
+            "Preview imported app capsule",
+            &manifest,
+            runtime_pack,
+            harness_pack,
+        )?;
+        let prompt_envelope_summary = summarize_prompt_envelope(&prompt_envelope);
+        self.enforce_runtime_start(&manifest, &runtime_pack.runtime.kind, approvals)?;
+        let server = ReactProjectRuntime::for_runtime_pack(runtime_pack)
+            .start_workspace_with_envelope_with_policy(
+                &manifest,
+                &prompt_envelope,
+                runtime_pack,
+                runtime_mode,
+                approvals,
+            )?;
+        let preview = server.preview();
+        let logs = preview_existing_logs(
+            &preview.logs,
+            &manifest.app_id,
+            &runtime_pack.id,
+            &runtime_pack.version,
+            &harness_pack.id,
+            &harness_pack.version,
+        );
+
+        self.active_apps
+            .lock()
+            .map_err(|_| RuntimeManagerError::LockPoisoned)?
+            .insert(
+                manifest.app_id.clone(),
+                ActiveRuntimeServer::ReactProject(server),
+            );
+
+        Ok(RuntimePreview {
+            app_id: manifest.app_id.clone(),
+            runtime_kind: runtime_pack.runtime.kind.clone(),
+            runtime_mode,
+            preview_url: preview.preview_url,
+            logs,
+            manifest,
+            prompt_envelope_summary,
+        })
+    }
+
+    fn build_and_preview_react_project_app(
         &self,
         requirement: String,
         runtime_mode: RuntimeMode,
         workspace_manager: &WorkspaceManager,
         approvals: &PolicyApprovalSet,
         agent_selection: &RuntimeAgentSelection,
+        packs: RuntimePackResolution,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let pack_manager = PackManager::new()?;
-        let packs = pack_manager.resolve_ai_agent_app_packs()?;
         let name = derive_app_name(&requirement);
-        let manifest =
-            workspace_manager.create_workspace_for_runtime(name, RuntimeKind::AiAgentApp)?;
-        let prompt_envelope = self.harness_engine.create_ai_agent_app_envelope(
+        let adapter = current_adapter();
+        let manifest = workspace_manager.create_workspace_for_resolved_packs(
+            name,
+            packs.runtime.clone(),
+            packs.harness.clone(),
+            adapter.as_ref(),
+        )?;
+        let runtime_kind = packs.runtime.manifest.runtime.kind.clone();
+        let prompt_envelope = self.harness_engine.create_envelope(
             &requirement,
             &manifest,
             &packs.runtime.manifest,
@@ -1109,7 +1067,8 @@ impl RuntimeManager {
             approvals,
             agent_selection,
         )?;
-        self.enforce_runtime_start(&manifest, "ai-agent-app", approvals)?;
+        self.enforce_runtime_start(&manifest, &runtime_kind, approvals)?;
+        let runtime = ReactProjectRuntime::for_runtime_pack(&packs.runtime.manifest);
         let (server, agent_session) = self.start_runtime_with_repair(
             &manifest,
             &requirement,
@@ -1120,19 +1079,18 @@ impl RuntimeManager {
             agent_session,
             runtime_mode,
             || {
-                self.ai_agent_app_runtime
-                    .start_workspace_with_envelope_with_policy(
-                        &manifest,
-                        &prompt_envelope,
-                        &packs.runtime.manifest,
-                        runtime_mode,
-                        approvals,
-                    )
+                runtime.start_workspace_with_envelope_with_policy(
+                    &manifest,
+                    &prompt_envelope,
+                    &packs.runtime.manifest,
+                    runtime_mode,
+                    approvals,
+                )
             },
-            |error| diagnostic_from_react_project_error(RuntimeKind::AiAgentApp, error),
-            RuntimeManagerError::AiAgentAppRuntime,
+            |error| diagnostic_from_react_project_error(runtime_kind.clone(), error),
+            RuntimeManagerError::ReactProjectRuntime,
             |repair_prompt| {
-                Ok(self.harness_engine.create_ai_agent_app_envelope(
+                Ok(self.harness_engine.create_envelope(
                     repair_prompt,
                     &manifest,
                     &packs.runtime.manifest,
@@ -1158,68 +1116,12 @@ impl RuntimeManager {
             .map_err(|_| RuntimeManagerError::LockPoisoned)?
             .insert(
                 manifest.app_id.clone(),
-                ActiveRuntimeServer::AiAgentApp(server),
+                ActiveRuntimeServer::ReactProject(server),
             );
 
         Ok(RuntimePreview {
             app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::AiAgentApp,
-            runtime_mode,
-            preview_url: preview.preview_url,
-            logs,
-            manifest,
-            prompt_envelope_summary,
-        })
-    }
-
-    fn preview_existing_ai_agent_app_workspace(
-        &self,
-        manifest: AppBoxManifest,
-        runtime_mode: RuntimeMode,
-        _workspace_manager: &WorkspaceManager,
-        runtime_pack: &RuntimePackManifest,
-        harness_pack: &HarnessPackManifest,
-        approvals: &PolicyApprovalSet,
-    ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_ai_agent_app_envelope(
-            "Preview imported app capsule",
-            &manifest,
-            runtime_pack,
-            harness_pack,
-        )?;
-        let prompt_envelope_summary = summarize_prompt_envelope(&prompt_envelope);
-        self.enforce_runtime_start(&manifest, "ai-agent-app", approvals)?;
-        let server = self
-            .ai_agent_app_runtime
-            .start_workspace_with_envelope_with_policy(
-                &manifest,
-                &prompt_envelope,
-                runtime_pack,
-                runtime_mode,
-                approvals,
-            )
-            .map_err(RuntimeManagerError::AiAgentAppRuntime)?;
-        let preview = server.preview();
-        let logs = preview_existing_logs(
-            &preview.logs,
-            &manifest.app_id,
-            &runtime_pack.id,
-            &runtime_pack.version,
-            &harness_pack.id,
-            &harness_pack.version,
-        );
-
-        self.active_apps
-            .lock()
-            .map_err(|_| RuntimeManagerError::LockPoisoned)?
-            .insert(
-                manifest.app_id.clone(),
-                ActiveRuntimeServer::AiAgentApp(server),
-            );
-
-        Ok(RuntimePreview {
-            app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::AiAgentApp,
+            runtime_kind,
             runtime_mode,
             preview_url: preview.preview_url,
             logs,
@@ -1235,13 +1137,17 @@ impl RuntimeManager {
         workspace_manager: &WorkspaceManager,
         approvals: &PolicyApprovalSet,
         agent_selection: &RuntimeAgentSelection,
+        packs: RuntimePackResolution,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let pack_manager = PackManager::new()?;
-        let packs = pack_manager.resolve_canvas2d_packs()?;
         let name = derive_app_name(&requirement);
-        let manifest =
-            workspace_manager.create_workspace_for_runtime(name, RuntimeKind::Canvas2d)?;
-        let prompt_envelope = self.harness_engine.create_canvas2d_envelope(
+        let adapter = current_adapter();
+        let manifest = workspace_manager.create_workspace_for_resolved_packs(
+            name,
+            packs.runtime.clone(),
+            packs.harness.clone(),
+            adapter.as_ref(),
+        )?;
+        let prompt_envelope = self.harness_engine.create_envelope(
             &requirement,
             &manifest,
             &packs.runtime.manifest,
@@ -1255,7 +1161,7 @@ impl RuntimeManager {
             approvals,
             agent_selection,
         )?;
-        self.enforce_runtime_start(&manifest, "canvas2d", approvals)?;
+        self.enforce_runtime_start(&manifest, &packs.runtime.manifest.runtime.kind, approvals)?;
         let server = self
             .canvas2d_runtime
             .start_workspace_with_envelope(&manifest, &prompt_envelope)?;
@@ -1295,7 +1201,7 @@ impl RuntimeManager {
 
         Ok(RuntimePreview {
             app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::Canvas2d,
+            runtime_kind: packs.runtime.manifest.runtime.kind.clone(),
             runtime_mode,
             preview_url: preview.preview_url,
             logs,
@@ -1313,7 +1219,7 @@ impl RuntimeManager {
         harness_pack: &HarnessPackManifest,
         approvals: &PolicyApprovalSet,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_canvas2d_envelope(
+        let prompt_envelope = self.harness_engine.create_envelope(
             "Preview imported app capsule",
             &manifest,
             runtime_pack,
@@ -1344,590 +1250,7 @@ impl RuntimeManager {
 
         Ok(RuntimePreview {
             app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::Canvas2d,
-            runtime_mode,
-            preview_url: preview.preview_url,
-            logs,
-            manifest,
-            prompt_envelope_summary,
-        })
-    }
-
-    fn build_and_preview_markdown_knowledge_app(
-        &self,
-        requirement: String,
-        runtime_mode: RuntimeMode,
-        workspace_manager: &WorkspaceManager,
-        approvals: &PolicyApprovalSet,
-        agent_selection: &RuntimeAgentSelection,
-    ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let pack_manager = PackManager::new()?;
-        let packs = pack_manager.resolve_markdown_knowledge_packs()?;
-        let name = derive_app_name(&requirement);
-        let manifest =
-            workspace_manager.create_workspace_for_runtime(name, RuntimeKind::MarkdownKnowledge)?;
-        let prompt_envelope = self.harness_engine.create_markdown_knowledge_envelope(
-            &requirement,
-            &manifest,
-            &packs.runtime.manifest,
-            &packs.harness.manifest,
-        )?;
-        let prompt_envelope_summary = summarize_prompt_envelope(&prompt_envelope);
-        let agent_session = self.run_agent_for_build(
-            &manifest,
-            &prompt_envelope,
-            workspace_manager,
-            approvals,
-            agent_selection,
-        )?;
-        self.enforce_runtime_start(&manifest, "markdown-knowledge", approvals)?;
-        let (server, agent_session) = self.start_runtime_with_repair(
-            &manifest,
-            &requirement,
-            &prompt_envelope,
-            workspace_manager,
-            approvals,
-            agent_selection,
-            agent_session,
-            runtime_mode,
-            || {
-                self.markdown_knowledge_runtime
-                    .start_workspace_with_envelope_with_policy(
-                        &manifest,
-                        &prompt_envelope,
-                        &packs.runtime.manifest,
-                        runtime_mode,
-                        approvals,
-                    )
-            },
-            |error| diagnostic_from_react_project_error(RuntimeKind::MarkdownKnowledge, error),
-            RuntimeManagerError::MarkdownKnowledgeRuntime,
-            |repair_prompt| {
-                Ok(self.harness_engine.create_markdown_knowledge_envelope(
-                    repair_prompt,
-                    &manifest,
-                    &packs.runtime.manifest,
-                    &packs.harness.manifest,
-                )?)
-            },
-        )?;
-        let preview = server.preview();
-        let logs = runtime_logs(
-            &preview.logs,
-            &agent_session.events,
-            &packs.runtime.manifest.id,
-            &packs.runtime.manifest.version,
-            &packs.harness.manifest.id,
-            &packs.harness.manifest.version,
-            &prompt_envelope.envelope_id,
-            prompt_envelope.acceptance_criteria.len(),
-            &agent_session,
-        );
-
-        self.active_apps
-            .lock()
-            .map_err(|_| RuntimeManagerError::LockPoisoned)?
-            .insert(
-                manifest.app_id.clone(),
-                ActiveRuntimeServer::MarkdownKnowledge(server),
-            );
-
-        Ok(RuntimePreview {
-            app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::MarkdownKnowledge,
-            runtime_mode,
-            preview_url: preview.preview_url,
-            logs,
-            manifest,
-            prompt_envelope_summary,
-        })
-    }
-
-    fn preview_existing_markdown_knowledge_workspace(
-        &self,
-        manifest: AppBoxManifest,
-        runtime_mode: RuntimeMode,
-        _workspace_manager: &WorkspaceManager,
-        runtime_pack: &RuntimePackManifest,
-        harness_pack: &HarnessPackManifest,
-        approvals: &PolicyApprovalSet,
-    ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_markdown_knowledge_envelope(
-            "Preview imported app capsule",
-            &manifest,
-            runtime_pack,
-            harness_pack,
-        )?;
-        let prompt_envelope_summary = summarize_prompt_envelope(&prompt_envelope);
-        self.enforce_runtime_start(&manifest, "markdown-knowledge", approvals)?;
-        let server = self
-            .markdown_knowledge_runtime
-            .start_workspace_with_envelope_with_policy(
-                &manifest,
-                &prompt_envelope,
-                runtime_pack,
-                runtime_mode,
-                approvals,
-            )
-            .map_err(RuntimeManagerError::MarkdownKnowledgeRuntime)?;
-        let preview = server.preview();
-        let logs = preview_existing_logs(
-            &preview.logs,
-            &manifest.app_id,
-            &runtime_pack.id,
-            &runtime_pack.version,
-            &harness_pack.id,
-            &harness_pack.version,
-        );
-
-        self.active_apps
-            .lock()
-            .map_err(|_| RuntimeManagerError::LockPoisoned)?
-            .insert(
-                manifest.app_id.clone(),
-                ActiveRuntimeServer::MarkdownKnowledge(server),
-            );
-
-        Ok(RuntimePreview {
-            app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::MarkdownKnowledge,
-            runtime_mode,
-            preview_url: preview.preview_url,
-            logs,
-            manifest,
-            prompt_envelope_summary,
-        })
-    }
-
-    fn build_and_preview_data_table_app(
-        &self,
-        requirement: String,
-        runtime_mode: RuntimeMode,
-        workspace_manager: &WorkspaceManager,
-        approvals: &PolicyApprovalSet,
-        agent_selection: &RuntimeAgentSelection,
-    ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let pack_manager = PackManager::new()?;
-        let packs = pack_manager.resolve_data_table_packs()?;
-        let name = derive_app_name(&requirement);
-        let manifest =
-            workspace_manager.create_workspace_for_runtime(name, RuntimeKind::DataTable)?;
-        let prompt_envelope = self.harness_engine.create_data_table_envelope(
-            &requirement,
-            &manifest,
-            &packs.runtime.manifest,
-            &packs.harness.manifest,
-        )?;
-        let prompt_envelope_summary = summarize_prompt_envelope(&prompt_envelope);
-        let agent_session = self.run_agent_for_build(
-            &manifest,
-            &prompt_envelope,
-            workspace_manager,
-            approvals,
-            agent_selection,
-        )?;
-        self.enforce_runtime_start(&manifest, "data-table", approvals)?;
-        let (server, agent_session) = self.start_runtime_with_repair(
-            &manifest,
-            &requirement,
-            &prompt_envelope,
-            workspace_manager,
-            approvals,
-            agent_selection,
-            agent_session,
-            runtime_mode,
-            || {
-                self.data_table_runtime
-                    .start_workspace_with_envelope_with_policy(
-                        &manifest,
-                        &prompt_envelope,
-                        &packs.runtime.manifest,
-                        runtime_mode,
-                        approvals,
-                    )
-            },
-            |error| diagnostic_from_react_project_error(RuntimeKind::DataTable, error),
-            RuntimeManagerError::DataTableRuntime,
-            |repair_prompt| {
-                Ok(self.harness_engine.create_data_table_envelope(
-                    repair_prompt,
-                    &manifest,
-                    &packs.runtime.manifest,
-                    &packs.harness.manifest,
-                )?)
-            },
-        )?;
-        let preview = server.preview();
-        let logs = runtime_logs(
-            &preview.logs,
-            &agent_session.events,
-            &packs.runtime.manifest.id,
-            &packs.runtime.manifest.version,
-            &packs.harness.manifest.id,
-            &packs.harness.manifest.version,
-            &prompt_envelope.envelope_id,
-            prompt_envelope.acceptance_criteria.len(),
-            &agent_session,
-        );
-
-        self.active_apps
-            .lock()
-            .map_err(|_| RuntimeManagerError::LockPoisoned)?
-            .insert(
-                manifest.app_id.clone(),
-                ActiveRuntimeServer::DataTable(server),
-            );
-
-        Ok(RuntimePreview {
-            app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::DataTable,
-            runtime_mode,
-            preview_url: preview.preview_url,
-            logs,
-            manifest,
-            prompt_envelope_summary,
-        })
-    }
-
-    fn preview_existing_data_table_workspace(
-        &self,
-        manifest: AppBoxManifest,
-        runtime_mode: RuntimeMode,
-        _workspace_manager: &WorkspaceManager,
-        runtime_pack: &RuntimePackManifest,
-        harness_pack: &HarnessPackManifest,
-        approvals: &PolicyApprovalSet,
-    ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_data_table_envelope(
-            "Preview imported app capsule",
-            &manifest,
-            runtime_pack,
-            harness_pack,
-        )?;
-        let prompt_envelope_summary = summarize_prompt_envelope(&prompt_envelope);
-        self.enforce_runtime_start(&manifest, "data-table", approvals)?;
-        let server = self
-            .data_table_runtime
-            .start_workspace_with_envelope_with_policy(
-                &manifest,
-                &prompt_envelope,
-                runtime_pack,
-                runtime_mode,
-                approvals,
-            )
-            .map_err(RuntimeManagerError::DataTableRuntime)?;
-        let preview = server.preview();
-        let logs = preview_existing_logs(
-            &preview.logs,
-            &manifest.app_id,
-            &runtime_pack.id,
-            &runtime_pack.version,
-            &harness_pack.id,
-            &harness_pack.version,
-        );
-
-        self.active_apps
-            .lock()
-            .map_err(|_| RuntimeManagerError::LockPoisoned)?
-            .insert(
-                manifest.app_id.clone(),
-                ActiveRuntimeServer::DataTable(server),
-            );
-
-        Ok(RuntimePreview {
-            app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::DataTable,
-            runtime_mode,
-            preview_url: preview.preview_url,
-            logs,
-            manifest,
-            prompt_envelope_summary,
-        })
-    }
-
-    fn build_and_preview_file_processor_app(
-        &self,
-        requirement: String,
-        runtime_mode: RuntimeMode,
-        workspace_manager: &WorkspaceManager,
-        approvals: &PolicyApprovalSet,
-        agent_selection: &RuntimeAgentSelection,
-    ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let pack_manager = PackManager::new()?;
-        let packs = pack_manager.resolve_file_processor_packs()?;
-        let name = derive_app_name(&requirement);
-        let manifest =
-            workspace_manager.create_workspace_for_runtime(name, RuntimeKind::FileProcessor)?;
-        let prompt_envelope = self.harness_engine.create_file_processor_envelope(
-            &requirement,
-            &manifest,
-            &packs.runtime.manifest,
-            &packs.harness.manifest,
-        )?;
-        let prompt_envelope_summary = summarize_prompt_envelope(&prompt_envelope);
-        let agent_session = self.run_agent_for_build(
-            &manifest,
-            &prompt_envelope,
-            workspace_manager,
-            approvals,
-            agent_selection,
-        )?;
-        self.enforce_runtime_start(&manifest, "file-processor", approvals)?;
-        let (server, agent_session) = self.start_runtime_with_repair(
-            &manifest,
-            &requirement,
-            &prompt_envelope,
-            workspace_manager,
-            approvals,
-            agent_selection,
-            agent_session,
-            runtime_mode,
-            || {
-                self.file_processor_runtime
-                    .start_workspace_with_envelope_with_policy(
-                        &manifest,
-                        &prompt_envelope,
-                        &packs.runtime.manifest,
-                        runtime_mode,
-                        approvals,
-                    )
-            },
-            diagnostic_from_file_processor_error,
-            RuntimeManagerError::FileProcessorRuntime,
-            |repair_prompt| {
-                Ok(self.harness_engine.create_file_processor_envelope(
-                    repair_prompt,
-                    &manifest,
-                    &packs.runtime.manifest,
-                    &packs.harness.manifest,
-                )?)
-            },
-        )?;
-        let preview = server.preview();
-        let logs = runtime_logs(
-            &preview.logs,
-            &agent_session.events,
-            &packs.runtime.manifest.id,
-            &packs.runtime.manifest.version,
-            &packs.harness.manifest.id,
-            &packs.harness.manifest.version,
-            &prompt_envelope.envelope_id,
-            prompt_envelope.acceptance_criteria.len(),
-            &agent_session,
-        );
-
-        self.active_apps
-            .lock()
-            .map_err(|_| RuntimeManagerError::LockPoisoned)?
-            .insert(
-                manifest.app_id.clone(),
-                ActiveRuntimeServer::FileProcessor(server),
-            );
-
-        Ok(RuntimePreview {
-            app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::FileProcessor,
-            runtime_mode,
-            preview_url: preview.preview_url,
-            logs,
-            manifest,
-            prompt_envelope_summary,
-        })
-    }
-
-    fn preview_existing_file_processor_workspace(
-        &self,
-        manifest: AppBoxManifest,
-        runtime_mode: RuntimeMode,
-        _workspace_manager: &WorkspaceManager,
-        runtime_pack: &RuntimePackManifest,
-        harness_pack: &HarnessPackManifest,
-        approvals: &PolicyApprovalSet,
-    ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_file_processor_envelope(
-            "Preview imported app capsule",
-            &manifest,
-            runtime_pack,
-            harness_pack,
-        )?;
-        let prompt_envelope_summary = summarize_prompt_envelope(&prompt_envelope);
-        self.enforce_runtime_start(&manifest, "file-processor", approvals)?;
-        let server = self
-            .file_processor_runtime
-            .start_workspace_with_envelope_with_policy(
-                &manifest,
-                &prompt_envelope,
-                runtime_pack,
-                runtime_mode,
-                approvals,
-            )?;
-        let preview = server.preview();
-        let logs = preview_existing_logs(
-            &preview.logs,
-            &manifest.app_id,
-            &runtime_pack.id,
-            &runtime_pack.version,
-            &harness_pack.id,
-            &harness_pack.version,
-        );
-
-        self.active_apps
-            .lock()
-            .map_err(|_| RuntimeManagerError::LockPoisoned)?
-            .insert(
-                manifest.app_id.clone(),
-                ActiveRuntimeServer::FileProcessor(server),
-            );
-
-        Ok(RuntimePreview {
-            app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::FileProcessor,
-            runtime_mode,
-            preview_url: preview.preview_url,
-            logs,
-            manifest,
-            prompt_envelope_summary,
-        })
-    }
-
-    fn build_and_preview_desktop_widget_app(
-        &self,
-        requirement: String,
-        runtime_mode: RuntimeMode,
-        workspace_manager: &WorkspaceManager,
-        approvals: &PolicyApprovalSet,
-        agent_selection: &RuntimeAgentSelection,
-    ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let pack_manager = PackManager::new()?;
-        let packs = pack_manager.resolve_desktop_widget_packs()?;
-        let name = derive_app_name(&requirement);
-        let manifest =
-            workspace_manager.create_workspace_for_runtime(name, RuntimeKind::DesktopWidget)?;
-        let prompt_envelope = self.harness_engine.create_desktop_widget_envelope(
-            &requirement,
-            &manifest,
-            &packs.runtime.manifest,
-            &packs.harness.manifest,
-        )?;
-        let prompt_envelope_summary = summarize_prompt_envelope(&prompt_envelope);
-        let agent_session = self.run_agent_for_build(
-            &manifest,
-            &prompt_envelope,
-            workspace_manager,
-            approvals,
-            agent_selection,
-        )?;
-        self.enforce_runtime_start(&manifest, "desktop-widget", approvals)?;
-        let (server, agent_session) = self.start_runtime_with_repair(
-            &manifest,
-            &requirement,
-            &prompt_envelope,
-            workspace_manager,
-            approvals,
-            agent_selection,
-            agent_session,
-            runtime_mode,
-            || {
-                self.desktop_widget_runtime
-                    .start_workspace_with_envelope_with_policy(
-                        &manifest,
-                        &prompt_envelope,
-                        &packs.runtime.manifest,
-                        runtime_mode,
-                        approvals,
-                    )
-            },
-            |error| diagnostic_from_react_project_error(RuntimeKind::DesktopWidget, error),
-            RuntimeManagerError::DesktopWidgetRuntime,
-            |repair_prompt| {
-                Ok(self.harness_engine.create_desktop_widget_envelope(
-                    repair_prompt,
-                    &manifest,
-                    &packs.runtime.manifest,
-                    &packs.harness.manifest,
-                )?)
-            },
-        )?;
-        let preview = server.preview();
-        let logs = runtime_logs(
-            &preview.logs,
-            &agent_session.events,
-            &packs.runtime.manifest.id,
-            &packs.runtime.manifest.version,
-            &packs.harness.manifest.id,
-            &packs.harness.manifest.version,
-            &prompt_envelope.envelope_id,
-            prompt_envelope.acceptance_criteria.len(),
-            &agent_session,
-        );
-
-        self.active_apps
-            .lock()
-            .map_err(|_| RuntimeManagerError::LockPoisoned)?
-            .insert(
-                manifest.app_id.clone(),
-                ActiveRuntimeServer::DesktopWidget(server),
-            );
-
-        Ok(RuntimePreview {
-            app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::DesktopWidget,
-            runtime_mode,
-            preview_url: preview.preview_url,
-            logs,
-            manifest,
-            prompt_envelope_summary,
-        })
-    }
-
-    fn preview_existing_desktop_widget_workspace(
-        &self,
-        manifest: AppBoxManifest,
-        runtime_mode: RuntimeMode,
-        _workspace_manager: &WorkspaceManager,
-        runtime_pack: &RuntimePackManifest,
-        harness_pack: &HarnessPackManifest,
-        approvals: &PolicyApprovalSet,
-    ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_desktop_widget_envelope(
-            "Preview imported app capsule",
-            &manifest,
-            runtime_pack,
-            harness_pack,
-        )?;
-        let prompt_envelope_summary = summarize_prompt_envelope(&prompt_envelope);
-        self.enforce_runtime_start(&manifest, "desktop-widget", approvals)?;
-        let server = self
-            .desktop_widget_runtime
-            .start_workspace_with_envelope_with_policy(
-                &manifest,
-                &prompt_envelope,
-                runtime_pack,
-                runtime_mode,
-                approvals,
-            )
-            .map_err(RuntimeManagerError::DesktopWidgetRuntime)?;
-        let preview = server.preview();
-        let logs = preview_existing_logs(
-            &preview.logs,
-            &manifest.app_id,
-            &runtime_pack.id,
-            &runtime_pack.version,
-            &harness_pack.id,
-            &harness_pack.version,
-        );
-
-        self.active_apps
-            .lock()
-            .map_err(|_| RuntimeManagerError::LockPoisoned)?
-            .insert(
-                manifest.app_id.clone(),
-                ActiveRuntimeServer::DesktopWidget(server),
-            );
-
-        Ok(RuntimePreview {
-            app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::DesktopWidget,
+            runtime_kind: "canvas2d".to_string(),
             runtime_mode,
             preview_url: preview.preview_url,
             logs,
@@ -1947,7 +1270,7 @@ impl RuntimeManager {
         approvals: &PolicyApprovalSet,
         agent_selection: &RuntimeAgentSelection,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_static_html_envelope(
+        let prompt_envelope = self.harness_engine.create_envelope(
             &requirement,
             &manifest,
             runtime_pack,
@@ -1985,7 +1308,7 @@ impl RuntimeManager {
 
         Ok(RuntimePreview {
             app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::StaticHtml,
+            runtime_kind: "static-html".to_string(),
             runtime_mode,
             preview_url: preview.preview_url,
             logs,
@@ -2005,7 +1328,7 @@ impl RuntimeManager {
         approvals: &PolicyApprovalSet,
         agent_selection: &RuntimeAgentSelection,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_react_vite_envelope(
+        let prompt_envelope = self.harness_engine.create_envelope(
             &requirement,
             &manifest,
             runtime_pack,
@@ -2039,10 +1362,10 @@ impl RuntimeManager {
                         approvals,
                     )
             },
-            |error| diagnostic_from_react_vite_error(RuntimeKind::ReactVite, error),
+            |error| diagnostic_from_react_vite_error("react-vite".to_string(), error),
             RuntimeManagerError::ReactViteRuntime,
             |repair_prompt| {
-                Ok(self.harness_engine.create_react_vite_envelope(
+                Ok(self.harness_engine.create_envelope(
                     repair_prompt,
                     &manifest,
                     runtime_pack,
@@ -2073,7 +1396,7 @@ impl RuntimeManager {
 
         Ok(RuntimePreview {
             app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::ReactVite,
+            runtime_kind: "react-vite".to_string(),
             runtime_mode,
             preview_url: preview.preview_url,
             logs,
@@ -2093,7 +1416,7 @@ impl RuntimeManager {
         approvals: &PolicyApprovalSet,
         agent_selection: &RuntimeAgentSelection,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_react_sqlite_envelope(
+        let prompt_envelope = self.harness_engine.create_envelope(
             &requirement,
             &manifest,
             runtime_pack,
@@ -2143,7 +1466,7 @@ impl RuntimeManager {
 
         Ok(RuntimePreview {
             app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::ReactSqlite,
+            runtime_kind: "react-sqlite".to_string(),
             runtime_mode,
             preview_url: preview.preview_url,
             logs,
@@ -2152,7 +1475,7 @@ impl RuntimeManager {
         })
     }
 
-    fn build_existing_ai_agent_app_workspace(
+    fn build_existing_react_project_workspace(
         &self,
         requirement: String,
         manifest: AppBoxManifest,
@@ -2163,7 +1486,8 @@ impl RuntimeManager {
         approvals: &PolicyApprovalSet,
         agent_selection: &RuntimeAgentSelection,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_ai_agent_app_envelope(
+        let runtime_kind = runtime_pack.runtime.kind.clone();
+        let prompt_envelope = self.harness_engine.create_envelope(
             &requirement,
             &manifest,
             runtime_pack,
@@ -2177,7 +1501,8 @@ impl RuntimeManager {
             approvals,
             agent_selection,
         )?;
-        self.enforce_runtime_start(&manifest, "ai-agent-app", approvals)?;
+        self.enforce_runtime_start(&manifest, &runtime_kind, approvals)?;
+        let runtime = ReactProjectRuntime::for_runtime_pack(runtime_pack);
         let (server, agent_session) = self.start_runtime_with_repair(
             &manifest,
             &requirement,
@@ -2188,19 +1513,18 @@ impl RuntimeManager {
             agent_session,
             runtime_mode,
             || {
-                self.ai_agent_app_runtime
-                    .start_workspace_with_envelope_with_policy(
-                        &manifest,
-                        &prompt_envelope,
-                        runtime_pack,
-                        runtime_mode,
-                        approvals,
-                    )
+                runtime.start_workspace_with_envelope_with_policy(
+                    &manifest,
+                    &prompt_envelope,
+                    runtime_pack,
+                    runtime_mode,
+                    approvals,
+                )
             },
-            |error| diagnostic_from_react_project_error(RuntimeKind::AiAgentApp, error),
-            RuntimeManagerError::AiAgentAppRuntime,
+            |error| diagnostic_from_react_project_error(runtime_kind.clone(), error),
+            RuntimeManagerError::ReactProjectRuntime,
             |repair_prompt| {
-                Ok(self.harness_engine.create_ai_agent_app_envelope(
+                Ok(self.harness_engine.create_envelope(
                     repair_prompt,
                     &manifest,
                     runtime_pack,
@@ -2226,12 +1550,12 @@ impl RuntimeManager {
             .map_err(|_| RuntimeManagerError::LockPoisoned)?
             .insert(
                 manifest.app_id.clone(),
-                ActiveRuntimeServer::AiAgentApp(server),
+                ActiveRuntimeServer::ReactProject(server),
             );
 
         Ok(RuntimePreview {
             app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::AiAgentApp,
+            runtime_kind,
             runtime_mode,
             preview_url: preview.preview_url,
             logs,
@@ -2251,7 +1575,7 @@ impl RuntimeManager {
         approvals: &PolicyApprovalSet,
         agent_selection: &RuntimeAgentSelection,
     ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_canvas2d_envelope(
+        let prompt_envelope = self.harness_engine.create_envelope(
             &requirement,
             &manifest,
             runtime_pack,
@@ -2292,359 +1616,7 @@ impl RuntimeManager {
 
         Ok(RuntimePreview {
             app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::Canvas2d,
-            runtime_mode,
-            preview_url: preview.preview_url,
-            logs,
-            manifest,
-            prompt_envelope_summary,
-        })
-    }
-
-    fn build_existing_markdown_knowledge_workspace(
-        &self,
-        requirement: String,
-        manifest: AppBoxManifest,
-        runtime_mode: RuntimeMode,
-        workspace_manager: &WorkspaceManager,
-        runtime_pack: &RuntimePackManifest,
-        harness_pack: &HarnessPackManifest,
-        approvals: &PolicyApprovalSet,
-        agent_selection: &RuntimeAgentSelection,
-    ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_markdown_knowledge_envelope(
-            &requirement,
-            &manifest,
-            runtime_pack,
-            harness_pack,
-        )?;
-        let prompt_envelope_summary = summarize_prompt_envelope(&prompt_envelope);
-        let agent_session = self.run_agent_for_build(
-            &manifest,
-            &prompt_envelope,
-            workspace_manager,
-            approvals,
-            agent_selection,
-        )?;
-        self.enforce_runtime_start(&manifest, "markdown-knowledge", approvals)?;
-        let (server, agent_session) = self.start_runtime_with_repair(
-            &manifest,
-            &requirement,
-            &prompt_envelope,
-            workspace_manager,
-            approvals,
-            agent_selection,
-            agent_session,
-            runtime_mode,
-            || {
-                self.markdown_knowledge_runtime
-                    .start_workspace_with_envelope_with_policy(
-                        &manifest,
-                        &prompt_envelope,
-                        runtime_pack,
-                        runtime_mode,
-                        approvals,
-                    )
-            },
-            |error| diagnostic_from_react_project_error(RuntimeKind::MarkdownKnowledge, error),
-            RuntimeManagerError::MarkdownKnowledgeRuntime,
-            |repair_prompt| {
-                Ok(self.harness_engine.create_markdown_knowledge_envelope(
-                    repair_prompt,
-                    &manifest,
-                    runtime_pack,
-                    harness_pack,
-                )?)
-            },
-        )?;
-        let preview = server.preview();
-        let logs = runtime_logs(
-            &preview.logs,
-            &agent_session.events,
-            &runtime_pack.id,
-            &runtime_pack.version,
-            &harness_pack.id,
-            &harness_pack.version,
-            &prompt_envelope.envelope_id,
-            prompt_envelope.acceptance_criteria.len(),
-            &agent_session,
-        );
-
-        self.active_apps
-            .lock()
-            .map_err(|_| RuntimeManagerError::LockPoisoned)?
-            .insert(
-                manifest.app_id.clone(),
-                ActiveRuntimeServer::MarkdownKnowledge(server),
-            );
-
-        Ok(RuntimePreview {
-            app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::MarkdownKnowledge,
-            runtime_mode,
-            preview_url: preview.preview_url,
-            logs,
-            manifest,
-            prompt_envelope_summary,
-        })
-    }
-
-    fn build_existing_data_table_workspace(
-        &self,
-        requirement: String,
-        manifest: AppBoxManifest,
-        runtime_mode: RuntimeMode,
-        workspace_manager: &WorkspaceManager,
-        runtime_pack: &RuntimePackManifest,
-        harness_pack: &HarnessPackManifest,
-        approvals: &PolicyApprovalSet,
-        agent_selection: &RuntimeAgentSelection,
-    ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_data_table_envelope(
-            &requirement,
-            &manifest,
-            runtime_pack,
-            harness_pack,
-        )?;
-        let prompt_envelope_summary = summarize_prompt_envelope(&prompt_envelope);
-        let agent_session = self.run_agent_for_build(
-            &manifest,
-            &prompt_envelope,
-            workspace_manager,
-            approvals,
-            agent_selection,
-        )?;
-        self.enforce_runtime_start(&manifest, "data-table", approvals)?;
-        let (server, agent_session) = self.start_runtime_with_repair(
-            &manifest,
-            &requirement,
-            &prompt_envelope,
-            workspace_manager,
-            approvals,
-            agent_selection,
-            agent_session,
-            runtime_mode,
-            || {
-                self.data_table_runtime
-                    .start_workspace_with_envelope_with_policy(
-                        &manifest,
-                        &prompt_envelope,
-                        runtime_pack,
-                        runtime_mode,
-                        approvals,
-                    )
-            },
-            |error| diagnostic_from_react_project_error(RuntimeKind::DataTable, error),
-            RuntimeManagerError::DataTableRuntime,
-            |repair_prompt| {
-                Ok(self.harness_engine.create_data_table_envelope(
-                    repair_prompt,
-                    &manifest,
-                    runtime_pack,
-                    harness_pack,
-                )?)
-            },
-        )?;
-        let preview = server.preview();
-        let logs = runtime_logs(
-            &preview.logs,
-            &agent_session.events,
-            &runtime_pack.id,
-            &runtime_pack.version,
-            &harness_pack.id,
-            &harness_pack.version,
-            &prompt_envelope.envelope_id,
-            prompt_envelope.acceptance_criteria.len(),
-            &agent_session,
-        );
-
-        self.active_apps
-            .lock()
-            .map_err(|_| RuntimeManagerError::LockPoisoned)?
-            .insert(
-                manifest.app_id.clone(),
-                ActiveRuntimeServer::DataTable(server),
-            );
-
-        Ok(RuntimePreview {
-            app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::DataTable,
-            runtime_mode,
-            preview_url: preview.preview_url,
-            logs,
-            manifest,
-            prompt_envelope_summary,
-        })
-    }
-
-    fn build_existing_file_processor_workspace(
-        &self,
-        requirement: String,
-        manifest: AppBoxManifest,
-        runtime_mode: RuntimeMode,
-        workspace_manager: &WorkspaceManager,
-        runtime_pack: &RuntimePackManifest,
-        harness_pack: &HarnessPackManifest,
-        approvals: &PolicyApprovalSet,
-        agent_selection: &RuntimeAgentSelection,
-    ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_file_processor_envelope(
-            &requirement,
-            &manifest,
-            runtime_pack,
-            harness_pack,
-        )?;
-        let prompt_envelope_summary = summarize_prompt_envelope(&prompt_envelope);
-        let agent_session = self.run_agent_for_build(
-            &manifest,
-            &prompt_envelope,
-            workspace_manager,
-            approvals,
-            agent_selection,
-        )?;
-        self.enforce_runtime_start(&manifest, "file-processor", approvals)?;
-        let (server, agent_session) = self.start_runtime_with_repair(
-            &manifest,
-            &requirement,
-            &prompt_envelope,
-            workspace_manager,
-            approvals,
-            agent_selection,
-            agent_session,
-            runtime_mode,
-            || {
-                self.file_processor_runtime
-                    .start_workspace_with_envelope_with_policy(
-                        &manifest,
-                        &prompt_envelope,
-                        runtime_pack,
-                        runtime_mode,
-                        approvals,
-                    )
-            },
-            diagnostic_from_file_processor_error,
-            RuntimeManagerError::FileProcessorRuntime,
-            |repair_prompt| {
-                Ok(self.harness_engine.create_file_processor_envelope(
-                    repair_prompt,
-                    &manifest,
-                    runtime_pack,
-                    harness_pack,
-                )?)
-            },
-        )?;
-        let preview = server.preview();
-        let logs = runtime_logs(
-            &preview.logs,
-            &agent_session.events,
-            &runtime_pack.id,
-            &runtime_pack.version,
-            &harness_pack.id,
-            &harness_pack.version,
-            &prompt_envelope.envelope_id,
-            prompt_envelope.acceptance_criteria.len(),
-            &agent_session,
-        );
-
-        self.active_apps
-            .lock()
-            .map_err(|_| RuntimeManagerError::LockPoisoned)?
-            .insert(
-                manifest.app_id.clone(),
-                ActiveRuntimeServer::FileProcessor(server),
-            );
-
-        Ok(RuntimePreview {
-            app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::FileProcessor,
-            runtime_mode,
-            preview_url: preview.preview_url,
-            logs,
-            manifest,
-            prompt_envelope_summary,
-        })
-    }
-
-    fn build_existing_desktop_widget_workspace(
-        &self,
-        requirement: String,
-        manifest: AppBoxManifest,
-        runtime_mode: RuntimeMode,
-        workspace_manager: &WorkspaceManager,
-        runtime_pack: &RuntimePackManifest,
-        harness_pack: &HarnessPackManifest,
-        approvals: &PolicyApprovalSet,
-        agent_selection: &RuntimeAgentSelection,
-    ) -> Result<RuntimePreview, RuntimeManagerError> {
-        let prompt_envelope = self.harness_engine.create_desktop_widget_envelope(
-            &requirement,
-            &manifest,
-            runtime_pack,
-            harness_pack,
-        )?;
-        let prompt_envelope_summary = summarize_prompt_envelope(&prompt_envelope);
-        let agent_session = self.run_agent_for_build(
-            &manifest,
-            &prompt_envelope,
-            workspace_manager,
-            approvals,
-            agent_selection,
-        )?;
-        self.enforce_runtime_start(&manifest, "desktop-widget", approvals)?;
-        let (server, agent_session) = self.start_runtime_with_repair(
-            &manifest,
-            &requirement,
-            &prompt_envelope,
-            workspace_manager,
-            approvals,
-            agent_selection,
-            agent_session,
-            runtime_mode,
-            || {
-                self.desktop_widget_runtime
-                    .start_workspace_with_envelope_with_policy(
-                        &manifest,
-                        &prompt_envelope,
-                        runtime_pack,
-                        runtime_mode,
-                        approvals,
-                    )
-            },
-            |error| diagnostic_from_react_project_error(RuntimeKind::DesktopWidget, error),
-            RuntimeManagerError::DesktopWidgetRuntime,
-            |repair_prompt| {
-                Ok(self.harness_engine.create_desktop_widget_envelope(
-                    repair_prompt,
-                    &manifest,
-                    runtime_pack,
-                    harness_pack,
-                )?)
-            },
-        )?;
-        let preview = server.preview();
-        let logs = runtime_logs(
-            &preview.logs,
-            &agent_session.events,
-            &runtime_pack.id,
-            &runtime_pack.version,
-            &harness_pack.id,
-            &harness_pack.version,
-            &prompt_envelope.envelope_id,
-            prompt_envelope.acceptance_criteria.len(),
-            &agent_session,
-        );
-
-        self.active_apps
-            .lock()
-            .map_err(|_| RuntimeManagerError::LockPoisoned)?
-            .insert(
-                manifest.app_id.clone(),
-                ActiveRuntimeServer::DesktopWidget(server),
-            );
-
-        Ok(RuntimePreview {
-            app_id: manifest.app_id.clone(),
-            runtime_kind: RuntimeKind::DesktopWidget,
+            runtime_kind: "canvas2d".to_string(),
             runtime_mode,
             preview_url: preview.preview_url,
             logs,
@@ -2704,7 +1676,7 @@ impl RuntimeManager {
             diagnostic_from_react_sqlite_error,
             RuntimeManagerError::ReactSqliteRuntime,
             |repair_prompt| {
-                Ok(self.harness_engine.create_react_sqlite_envelope(
+                Ok(self.harness_engine.create_envelope(
                     repair_prompt,
                     manifest,
                     runtime_pack,
@@ -2721,7 +1693,7 @@ impl RuntimeManager {
                 );
                 let fallback_prompt =
                     stable_react_sqlite_fallback_prompt(original_requirement, diagnostic);
-                let fallback_envelope = self.harness_engine.create_react_sqlite_envelope(
+                let fallback_envelope = self.harness_engine.create_envelope(
                     &fallback_prompt,
                     manifest,
                     runtime_pack,
@@ -3043,10 +2015,12 @@ fn stable_react_sqlite_fallback_prompt(
         requirement
     };
     let software_name = suggest_software_name(requirement);
-    format!(
-        "Software name: {software_name}\nUser requirement:\n{requirement}\n\nRuntime repair fallback reason: {}\nUse the Sofvary managed React + SQLite baseline with local CRUD, a Vite frontend, and a local API server.\nVisible app title rule: use only the software name, not the full user requirement, PromptEnvelope text, or runtime repair fallback reason.",
-        diagnostic.summary()
-    )
+    let variables = HashMap::from([
+        ("software.name".to_string(), software_name),
+        ("user.intent".to_string(), requirement.to_string()),
+        ("diagnostic.summary".to_string(), diagnostic.summary()),
+    ]);
+    render_builtin_prompt_template("prompt-templates/react-sqlite-fallback.md", &variables)
 }
 
 fn runtime_repair_prompt(
@@ -3073,27 +2047,45 @@ fn runtime_repair_prompt(
         .as_ref()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "not available".to_string());
+    let variables = HashMap::from([
+        (
+            "software.name".to_string(),
+            suggest_software_name(original_requirement),
+        ),
+        ("user.intent".to_string(), original_requirement.to_string()),
+        (
+            "runtime.kind".to_string(),
+            envelope.runtime_policy.runtime_kind.clone(),
+        ),
+        ("repair.attempt".to_string(), attempt.to_string()),
+        ("repair.maxAttempts".to_string(), max_attempts.to_string()),
+        (
+            "diagnostic.stage".to_string(),
+            format!("{:?}", diagnostic.stage),
+        ),
+        ("diagnostic.command".to_string(), command.to_string()),
+        (
+            "diagnostic.statusCode".to_string(),
+            format!("{:?}", diagnostic.status_code),
+        ),
+        (
+            "diagnostic.category".to_string(),
+            format!("{:?}", diagnostic.category),
+        ),
+        ("diagnostic.logPath".to_string(), log_path),
+        ("diagnostic.stdoutTail".to_string(), stdout.to_string()),
+        ("diagnostic.stderrTail".to_string(), stderr.to_string()),
+    ]);
+    render_builtin_prompt_template("prompt-templates/runtime-repair.md", &variables)
+}
 
-    format!(
-        "Repair the generated Sofvary app so it starts successfully.\n\
-Software name: {}\n\
-Original user intent:\n{original_requirement}\n\n\
-Runtime kind: {}\n\
-Repair attempt: {attempt}/{max_attempts}\n\
-Failed stage: {:?}\n\
-Failed command: {command}\n\
-Status code: {:?}\n\
-Diagnostic category: {:?}\n\
-Runtime log path: {log_path}\n\n\
-stdout tail:\n{stdout}\n\n\
-stderr tail:\n{stderr}\n\n\
-Keep the same output contract and regenerate every required file exactly. Do not add files outside the allowed set. Do not include Sofvary shell UI. The visible app title must stay a concise software name and must not display this repair prompt or diagnostics.",
-        suggest_software_name(original_requirement),
-        envelope.runtime_policy.runtime_kind,
-        diagnostic.stage,
-        diagnostic.status_code,
-        diagnostic.category,
-    )
+fn render_builtin_prompt_template(path: &str, variables: &HashMap<String, String>) -> String {
+    let template = get_builtin_resource(path).unwrap_or_else(|| {
+        panic!("missing builtin prompt template resource: {path}");
+    });
+    render_template(template, variables).unwrap_or_else(|error| {
+        panic!("failed to render builtin prompt template {path}: {error}");
+    })
 }
 
 fn runtime_logs(
@@ -3156,7 +2148,7 @@ fn preview_blocked_assets(
     }
     Some(Box::new(RuntimeAssetsReady {
         app_id: manifest.app_id.clone(),
-        runtime_kind: diagnostic.runtime_kind,
+        runtime_kind: diagnostic.runtime_kind.clone(),
         runtime_mode,
         manifest: manifest.clone(),
         prompt_envelope_summary: summarize_prompt_envelope(initial_envelope),
@@ -3279,7 +2271,7 @@ mod tests {
                 },
                 |error| {
                     diagnostic_from_command_failure(
-                        RuntimeKind::ReactVite,
+                        "react-vite".to_string(),
                         "build",
                         Some(1),
                         "",
@@ -3319,7 +2311,7 @@ mod tests {
                 RuntimeMode::Dev,
                 || Ok::<(), String>(()),
                 |error| diagnostic_from_command_failure(
-                    RuntimeKind::ReactVite,
+                    "react-vite".to_string(),
                     "build",
                     Some(1),
                     "",
@@ -3370,7 +2362,7 @@ mod tests {
                 },
                 |error| {
                     diagnostic_from_command_failure(
-                        RuntimeKind::ReactVite,
+                        "react-vite".to_string(),
                         "build",
                         Some(1),
                         "",
@@ -3421,7 +2413,7 @@ mod tests {
                 || Err("sidecar executable 'pnpm' was not found".to_string()),
                 |error| {
                     diagnostic_from_command_failure(
-                        RuntimeKind::ReactVite,
+                        "react-vite".to_string(),
                         "install",
                         None,
                         "",
@@ -3448,7 +2440,7 @@ mod tests {
                     RuntimeDiagnosticRepairTarget::Sofvary
                 );
                 assert_eq!(assets.app_id, manifest.app_id);
-                assert_eq!(assets.runtime_kind, RuntimeKind::ReactVite);
+                assert_eq!(assets.runtime_kind, "react-vite".to_string());
                 assert_eq!(assets.runtime_mode, RuntimeMode::Dev);
                 assert!(assets
                     .prompt_envelope_summary
@@ -3493,7 +2485,7 @@ mod tests {
                 },
                 |error| {
                     diagnostic_from_command_failure(
-                        RuntimeKind::ReactVite,
+                        "react-vite".to_string(),
                         "build",
                         Some(1),
                         "",
@@ -3548,7 +2540,7 @@ mod tests {
         AppBoxManifest {
             app_id: "app_test".to_string(),
             name: "Test App".to_string(),
-            mode: RuntimeKind::ReactVite,
+            mode: "react-vite".to_string(),
             created_at: "2026-06-15T00:00:00Z".to_string(),
             updated_at: "2026-06-15T00:00:00Z".to_string(),
             stack: vec!["react".to_string(), "vite".to_string()],

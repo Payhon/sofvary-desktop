@@ -1,17 +1,8 @@
-export type RuntimeKind =
-  | "static-html"
-  | "react-vite"
-  | "react-sqlite"
-  | "ai-agent-app"
-  | "canvas2d"
-  | "markdown-knowledge"
-  | "data-table"
-  | "file-processor"
-  | "desktop-widget";
+export type RuntimeKind = string;
 export type RuntimeChoice = "auto" | RuntimeKind;
 export type RuntimeMode = "dev" | "prod";
 export type PackKind = "runtime" | "harness" | "plugin";
-export type PackSource = "builtin" | "cache" | "registry";
+export type PackSource = "runtime-override" | "cache" | "registry" | "compiled-builtin";
 export type UiThemePreference = "system" | "dark" | "light";
 export type ResolvedUiTheme = "dark" | "light";
 export type UiAccentPreference = "blue" | "teal" | "violet" | "amber" | "rose";

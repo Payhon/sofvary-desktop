@@ -1,23 +1,13 @@
-use crate::core::pack_manager::{
-    AI_AGENT_APP_HARNESS_PACK_ID, AI_AGENT_APP_PACK_VERSION, AI_AGENT_APP_RUNTIME_PACK_ID,
-    CANVAS2D_HARNESS_PACK_ID, CANVAS2D_PACK_VERSION, CANVAS2D_RUNTIME_PACK_ID,
-    DATA_TABLE_HARNESS_PACK_ID, DATA_TABLE_PACK_VERSION, DATA_TABLE_RUNTIME_PACK_ID,
-    DESKTOP_WIDGET_HARNESS_PACK_ID, DESKTOP_WIDGET_PACK_VERSION, DESKTOP_WIDGET_RUNTIME_PACK_ID,
-    FILE_PROCESSOR_HARNESS_PACK_ID, FILE_PROCESSOR_PACK_VERSION, FILE_PROCESSOR_RUNTIME_PACK_ID,
-    MARKDOWN_KNOWLEDGE_HARNESS_PACK_ID, MARKDOWN_KNOWLEDGE_PACK_VERSION,
-    MARKDOWN_KNOWLEDGE_RUNTIME_PACK_ID, REACT_SQLITE_HARNESS_PACK_ID, REACT_SQLITE_PACK_VERSION,
-    REACT_SQLITE_RUNTIME_PACK_ID, REACT_VITE_HARNESS_PACK_ID, REACT_VITE_PACK_VERSION,
-    REACT_VITE_RUNTIME_PACK_ID, STATIC_HTML_HARNESS_PACK_ID, STATIC_HTML_PACK_VERSION,
-    STATIC_HTML_RUNTIME_PACK_ID,
-};
+use crate::core::pack_manager::{CachedPack, PackError, PackManager};
+use crate::core::pack_types::{HarnessPackManifest, RuntimePackManifest};
 use crate::core::policy_engine::{PolicyEngine, PolicyError};
 use crate::core::policy_types::{
     PolicyApprovalSet, PolicyFileWriteRequest, PolicyWorkspaceLockfileUpdateRequest,
 };
 use crate::core::software_naming::clean_display_name;
 use crate::core::workspace_types::{
-    AppBoxManifest, RuntimeKind, SnapshotSummary, SofvaryLockfile, WorkspaceConstraints,
-    WorkspacePaths, WorkspacePreview, WorkspaceSummary,
+    AppBoxManifest, LockedPackSource, RuntimeKind, SnapshotSummary, SofvaryLockfile,
+    WorkspaceConstraints, WorkspacePaths, WorkspacePreview, WorkspaceSummary,
 };
 use crate::platform::{current_adapter, PlatformAdapter, PlatformError};
 use chrono::Utc;
@@ -38,6 +28,8 @@ pub enum WorkspaceError {
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("pack error: {0}")]
+    Pack(#[from] PackError),
     #[error("workspace path escapes its boundary: {0}")]
     PathEscape(PathBuf),
     #[error("workspace manifest is invalid: {0}")]
@@ -106,7 +98,7 @@ impl WorkspaceManager {
     }
 
     pub fn create_workspace(&self, name: String) -> WorkspaceResult<AppBoxManifest> {
-        self.create_workspace_for_runtime(name, RuntimeKind::StaticHtml)
+        self.create_workspace_with_adapter(name, current_adapter().as_ref())
     }
 
     pub fn create_workspace_for_runtime(
@@ -127,13 +119,27 @@ impl WorkspaceManager {
         name: String,
         adapter: &dyn PlatformAdapter,
     ) -> WorkspaceResult<AppBoxManifest> {
-        self.create_workspace_for_runtime_with_adapter(name, RuntimeKind::StaticHtml, adapter)
+        let pack_manager = PackManager::new_with_adapter(adapter)?;
+        let packs = pack_manager.resolve_default_runtime_packs()?;
+        self.create_workspace_for_resolved_packs(name, packs.runtime, packs.harness, adapter)
     }
 
     pub fn create_workspace_for_runtime_with_adapter(
         &self,
         name: String,
         runtime_kind: RuntimeKind,
+        adapter: &dyn PlatformAdapter,
+    ) -> WorkspaceResult<AppBoxManifest> {
+        let pack_manager = PackManager::new_with_adapter(adapter)?;
+        let packs = pack_manager.resolve_runtime_packs_by_kind(&runtime_kind)?;
+        self.create_workspace_for_resolved_packs(name, packs.runtime, packs.harness, adapter)
+    }
+
+    pub fn create_workspace_for_resolved_packs(
+        &self,
+        name: String,
+        runtime_pack: CachedPack<RuntimePackManifest>,
+        harness_pack: CachedPack<HarnessPackManifest>,
         adapter: &dyn PlatformAdapter,
     ) -> WorkspaceResult<AppBoxManifest> {
         let app_id = format!("app_{}", Uuid::new_v4().simple());
@@ -144,19 +150,24 @@ impl WorkspaceManager {
         let snapshots = root.join("snapshots");
         let runtime = root.join("runtime");
 
-        for dir in [
-            &generated_static,
-            &generated.join("react"),
-            &generated.join("ai"),
-            &generated.join("ai").join("artifacts"),
-            &generated.join("canvas"),
-            &generated.join("markdown"),
-            &generated.join("data"),
-            &generated.join("file-processor"),
-            &generated.join("widget"),
-            &snapshots,
-            &runtime.join("logs"),
-        ] {
+        let mut dirs = vec![
+            generated.clone(),
+            generated_static.clone(),
+            snapshots.clone(),
+            runtime.join("logs"),
+            root.join(&runtime_pack.manifest.runtime.generated_root),
+        ];
+        if let Some(context_root) = runtime_pack.manifest.executor.context_root.as_deref() {
+            dirs.push(root.join(context_root));
+        }
+        for relative in &runtime_pack.manifest.executor.allowed_top_level_dirs {
+            dirs.push(generated.join(relative));
+        }
+        for relative in &runtime_pack.manifest.executor.clear_roots {
+            dirs.push(root.join(relative));
+        }
+        for dir in dirs {
+            ensure_workspace_child(&root, &dir)?;
             fs::create_dir_all(dir)?;
         }
 
@@ -175,10 +186,10 @@ impl WorkspaceManager {
         let manifest = AppBoxManifest {
             app_id,
             name: clean_workspace_name(&name),
-            mode: runtime_kind,
+            mode: runtime_pack.manifest.runtime.kind.clone(),
             created_at: now.clone(),
             updated_at: now,
-            stack: stack_for_runtime(runtime_kind),
+            stack: stack_from_runtime_pack(&runtime_pack.manifest),
             paths: paths.clone(),
             constraints: WorkspaceConstraints {
                 boundary: root.clone(),
@@ -193,9 +204,16 @@ impl WorkspaceManager {
 
         let lockfile = SofvaryLockfile {
             client_version: env!("CARGO_PKG_VERSION").to_string(),
-            runtime_packs: runtime_packs_for_runtime(runtime_kind),
-            harness_packs: harness_packs_for_runtime(runtime_kind),
+            runtime_packs: HashMap::from([(
+                runtime_pack.manifest.id.clone(),
+                runtime_pack.manifest.version.clone(),
+            )]),
+            harness_packs: HashMap::from([(
+                harness_pack.manifest.id.clone(),
+                harness_pack.manifest.version.clone(),
+            )]),
             plugin_packs: HashMap::new(),
+            pack_sources: pack_sources_for_resolved_packs(&runtime_pack, &harness_pack),
             agent_adapter: "unconfigured".to_string(),
         };
 
@@ -1536,139 +1554,70 @@ fn validate_workspace_app_id(app_id: &str) -> WorkspaceResult<()> {
     Ok(())
 }
 
-fn stack_for_runtime(runtime_kind: RuntimeKind) -> Vec<String> {
-    match runtime_kind {
-        RuntimeKind::StaticHtml => {
-            vec!["Static HTML".to_string(), "Vanilla JavaScript".to_string()]
+fn stack_from_runtime_pack(runtime_pack: &RuntimePackManifest) -> Vec<String> {
+    let mut stack = Vec::new();
+    for value in [
+        runtime_pack.stack.frontend.as_deref(),
+        runtime_pack.stack.language.as_deref(),
+        runtime_pack.stack.bundler.as_deref(),
+        runtime_pack.stack.database.as_deref(),
+        runtime_pack.stack.server.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("none") {
+            stack.push(trimmed.to_string());
         }
-        RuntimeKind::ReactVite => vec![
-            "React".to_string(),
-            "TypeScript".to_string(),
-            "Vite".to_string(),
-        ],
-        RuntimeKind::ReactSqlite => vec![
-            "React".to_string(),
-            "TypeScript".to_string(),
-            "Vite".to_string(),
-            "Node local API".to_string(),
-            "SQLite".to_string(),
-        ],
-        RuntimeKind::AiAgentApp => vec![
-            "React".to_string(),
-            "TypeScript".to_string(),
-            "Vite".to_string(),
-            "Sofvary AI Gateway".to_string(),
-            "Provider Binding".to_string(),
-        ],
-        RuntimeKind::Canvas2d => vec!["Canvas 2D".to_string(), "JavaScript".to_string()],
-        RuntimeKind::MarkdownKnowledge => vec![
-            "React".to_string(),
-            "TypeScript".to_string(),
-            "Vite".to_string(),
-            "Markdown".to_string(),
-            "JSON".to_string(),
-        ],
-        RuntimeKind::DataTable => vec![
-            "React".to_string(),
-            "TypeScript".to_string(),
-            "Vite".to_string(),
-            "JSON".to_string(),
-        ],
-        RuntimeKind::FileProcessor => vec![
-            "React".to_string(),
-            "TypeScript".to_string(),
-            "Vite".to_string(),
-            "Dry-run file operations".to_string(),
-        ],
-        RuntimeKind::DesktopWidget => vec![
-            "React".to_string(),
-            "TypeScript".to_string(),
-            "Vite".to_string(),
-            "Widget".to_string(),
-        ],
+    }
+
+    if stack.is_empty() {
+        stack.push(runtime_pack.name.clone());
+    }
+    stack
+}
+
+fn pack_sources_for_resolved_packs(
+    runtime_pack: &CachedPack<RuntimePackManifest>,
+    harness_pack: &CachedPack<HarnessPackManifest>,
+) -> HashMap<String, LockedPackSource> {
+    HashMap::from([
+        (
+            format!(
+                "runtime:{}@{}",
+                runtime_pack.manifest.id, runtime_pack.manifest.version
+            ),
+            locked_pack_source(runtime_pack),
+        ),
+        (
+            format!(
+                "harness:{}@{}",
+                harness_pack.manifest.id, harness_pack.manifest.version
+            ),
+            locked_pack_source(harness_pack),
+        ),
+    ])
+}
+
+fn locked_pack_source<T>(pack: &CachedPack<T>) -> LockedPackSource {
+    LockedPackSource {
+        source: pack.source.as_str().to_string(),
+        source_path: pack
+            .source_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string()),
+        sha256: pack.sha256.clone(),
     }
 }
 
-fn runtime_packs_for_runtime(runtime_kind: RuntimeKind) -> HashMap<String, String> {
-    match runtime_kind {
-        RuntimeKind::StaticHtml => HashMap::from([(
-            STATIC_HTML_RUNTIME_PACK_ID.to_string(),
-            STATIC_HTML_PACK_VERSION.to_string(),
-        )]),
-        RuntimeKind::ReactVite => HashMap::from([(
-            REACT_VITE_RUNTIME_PACK_ID.to_string(),
-            REACT_VITE_PACK_VERSION.to_string(),
-        )]),
-        RuntimeKind::ReactSqlite => HashMap::from([(
-            REACT_SQLITE_RUNTIME_PACK_ID.to_string(),
-            REACT_SQLITE_PACK_VERSION.to_string(),
-        )]),
-        RuntimeKind::AiAgentApp => HashMap::from([(
-            AI_AGENT_APP_RUNTIME_PACK_ID.to_string(),
-            AI_AGENT_APP_PACK_VERSION.to_string(),
-        )]),
-        RuntimeKind::Canvas2d => HashMap::from([(
-            CANVAS2D_RUNTIME_PACK_ID.to_string(),
-            CANVAS2D_PACK_VERSION.to_string(),
-        )]),
-        RuntimeKind::MarkdownKnowledge => HashMap::from([(
-            MARKDOWN_KNOWLEDGE_RUNTIME_PACK_ID.to_string(),
-            MARKDOWN_KNOWLEDGE_PACK_VERSION.to_string(),
-        )]),
-        RuntimeKind::DataTable => HashMap::from([(
-            DATA_TABLE_RUNTIME_PACK_ID.to_string(),
-            DATA_TABLE_PACK_VERSION.to_string(),
-        )]),
-        RuntimeKind::FileProcessor => HashMap::from([(
-            FILE_PROCESSOR_RUNTIME_PACK_ID.to_string(),
-            FILE_PROCESSOR_PACK_VERSION.to_string(),
-        )]),
-        RuntimeKind::DesktopWidget => HashMap::from([(
-            DESKTOP_WIDGET_RUNTIME_PACK_ID.to_string(),
-            DESKTOP_WIDGET_PACK_VERSION.to_string(),
-        )]),
+fn ensure_workspace_child(root: &Path, path: &Path) -> WorkspaceResult<()> {
+    let normalized_root = normalize_for_boundary(root)?;
+    let normalized_path = normalize_for_boundary(path)?;
+    if !normalized_path.starts_with(&normalized_root) {
+        return Err(WorkspaceError::PathEscape(path.to_path_buf()));
     }
-}
-
-fn harness_packs_for_runtime(runtime_kind: RuntimeKind) -> HashMap<String, String> {
-    match runtime_kind {
-        RuntimeKind::StaticHtml => HashMap::from([(
-            STATIC_HTML_HARNESS_PACK_ID.to_string(),
-            STATIC_HTML_PACK_VERSION.to_string(),
-        )]),
-        RuntimeKind::ReactVite => HashMap::from([(
-            REACT_VITE_HARNESS_PACK_ID.to_string(),
-            REACT_VITE_PACK_VERSION.to_string(),
-        )]),
-        RuntimeKind::ReactSqlite => HashMap::from([(
-            REACT_SQLITE_HARNESS_PACK_ID.to_string(),
-            REACT_SQLITE_PACK_VERSION.to_string(),
-        )]),
-        RuntimeKind::AiAgentApp => HashMap::from([(
-            AI_AGENT_APP_HARNESS_PACK_ID.to_string(),
-            AI_AGENT_APP_PACK_VERSION.to_string(),
-        )]),
-        RuntimeKind::Canvas2d => HashMap::from([(
-            CANVAS2D_HARNESS_PACK_ID.to_string(),
-            CANVAS2D_PACK_VERSION.to_string(),
-        )]),
-        RuntimeKind::MarkdownKnowledge => HashMap::from([(
-            MARKDOWN_KNOWLEDGE_HARNESS_PACK_ID.to_string(),
-            MARKDOWN_KNOWLEDGE_PACK_VERSION.to_string(),
-        )]),
-        RuntimeKind::DataTable => HashMap::from([(
-            DATA_TABLE_HARNESS_PACK_ID.to_string(),
-            DATA_TABLE_PACK_VERSION.to_string(),
-        )]),
-        RuntimeKind::FileProcessor => HashMap::from([(
-            FILE_PROCESSOR_HARNESS_PACK_ID.to_string(),
-            FILE_PROCESSOR_PACK_VERSION.to_string(),
-        )]),
-        RuntimeKind::DesktopWidget => HashMap::from([(
-            DESKTOP_WIDGET_HARNESS_PACK_ID.to_string(),
-            DESKTOP_WIDGET_PACK_VERSION.to_string(),
-        )]),
-    }
+    Ok(())
 }
 
 fn clean_workspace_name(name: &str) -> String {
@@ -1835,6 +1784,47 @@ mod tests {
         }
     }
 
+    fn resolved_default_packs(
+        adapter: &TempAdapter,
+    ) -> crate::core::pack_manager::RuntimePackResolution {
+        crate::core::pack_manager::PackManager::new_with_adapter(adapter)
+            .expect("pack manager")
+            .resolve_default_runtime_packs()
+            .expect("resolved packs")
+    }
+
+    fn resolved_packs_for_runtime_kind(
+        adapter: &TempAdapter,
+        runtime_kind: &str,
+    ) -> crate::core::pack_manager::RuntimePackResolution {
+        crate::core::pack_manager::PackManager::new_with_adapter(adapter)
+            .expect("pack manager")
+            .resolve_runtime_packs_by_kind(runtime_kind)
+            .expect("resolved packs")
+    }
+
+    fn assert_lockfile_matches_packs(
+        lockfile: &SofvaryLockfile,
+        packs: &crate::core::pack_manager::RuntimePackResolution,
+    ) {
+        assert_eq!(
+            lockfile
+                .runtime_packs
+                .get(&packs.runtime.manifest.id)
+                .map(String::as_str),
+            Some(packs.runtime.manifest.version.as_str())
+        );
+        assert_eq!(
+            lockfile
+                .harness_packs
+                .get(&packs.harness.manifest.id)
+                .map(String::as_str),
+            Some(packs.harness.manifest.version.as_str())
+        );
+        assert_eq!(lockfile.runtime_packs.len(), 1);
+        assert_eq!(lockfile.harness_packs.len(), 1);
+    }
+
     #[test]
     fn creates_workspace_layout() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1858,20 +1848,8 @@ mod tests {
             &fs::read(manifest.paths.root.join("sofvary.lock.json")).unwrap(),
         )
         .expect("lockfile");
-        assert_eq!(
-            lockfile
-                .runtime_packs
-                .get(STATIC_HTML_RUNTIME_PACK_ID)
-                .map(String::as_str),
-            Some(STATIC_HTML_PACK_VERSION)
-        );
-        assert_eq!(
-            lockfile
-                .harness_packs
-                .get(STATIC_HTML_HARNESS_PACK_ID)
-                .map(String::as_str),
-            Some(STATIC_HTML_PACK_VERSION)
-        );
+        let packs = resolved_default_packs(&adapter);
+        assert_lockfile_matches_packs(&lockfile, &packs);
     }
 
     #[test]
@@ -1992,9 +1970,10 @@ mod tests {
             Some("0.2.0")
         );
         assert_eq!(updated.runtime_packs.len(), 1);
-        assert!(!updated
+        assert!(updated
             .runtime_packs
-            .contains_key(STATIC_HTML_RUNTIME_PACK_ID));
+            .keys()
+            .all(|id| id == "sofvary.runtime.remote-test"));
         let second_lockfile = manager
             .read_lockfile_for_manifest(&second)
             .expect("second lockfile");
@@ -2098,9 +2077,10 @@ mod tests {
                 .map(String::as_str),
             Some("0.2.0")
         );
-        assert!(!updated
+        assert!(updated
             .harness_packs
-            .contains_key(STATIC_HTML_HARNESS_PACK_ID));
+            .keys()
+            .all(|id| id == "sofvary.harness.remote-test"));
     }
 
     #[test]
@@ -2117,36 +2097,23 @@ mod tests {
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "React Board".to_string(),
-                RuntimeKind::ReactVite,
+                "react-vite".to_string(),
                 &adapter,
             )
             .expect("workspace");
 
-        assert_eq!(manifest.mode, RuntimeKind::ReactVite);
+        assert_eq!(manifest.mode, "react-vite".to_string());
         assert!(manifest.paths.generated.join("react").exists());
-        assert_eq!(manifest.stack, ["React", "TypeScript", "Vite"]);
+        for expected in ["React", "TypeScript", "Vite"] {
+            assert!(manifest.stack.contains(&expected.to_string()));
+        }
 
         let lockfile: SofvaryLockfile = serde_json::from_slice(
             &fs::read(manifest.paths.root.join("sofvary.lock.json")).unwrap(),
         )
         .expect("lockfile");
-        assert_eq!(
-            lockfile
-                .runtime_packs
-                .get(REACT_VITE_RUNTIME_PACK_ID)
-                .map(String::as_str),
-            Some(REACT_VITE_PACK_VERSION)
-        );
-        assert_eq!(
-            lockfile
-                .harness_packs
-                .get(REACT_VITE_HARNESS_PACK_ID)
-                .map(String::as_str),
-            Some(REACT_VITE_PACK_VERSION)
-        );
-        assert!(!lockfile
-            .runtime_packs
-            .contains_key(STATIC_HTML_RUNTIME_PACK_ID));
+        let packs = resolved_packs_for_runtime_kind(&adapter, "react-vite");
+        assert_lockfile_matches_packs(&lockfile, &packs);
     }
 
     #[test]
@@ -2163,40 +2130,24 @@ mod tests {
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "Customer Manager".to_string(),
-                RuntimeKind::ReactSqlite,
+                "react-sqlite".to_string(),
                 &adapter,
             )
             .expect("workspace");
 
-        assert_eq!(manifest.mode, RuntimeKind::ReactSqlite);
+        assert_eq!(manifest.mode, "react-sqlite".to_string());
         assert!(manifest.paths.generated.join("react").exists());
         assert!(manifest.paths.generated.join("data").exists());
-        assert_eq!(
-            manifest.stack,
-            ["React", "TypeScript", "Vite", "Node local API", "SQLite"]
-        );
+        for expected in ["React", "TypeScript", "Vite", "Node local API", "SQLite"] {
+            assert!(manifest.stack.contains(&expected.to_string()));
+        }
 
         let lockfile: SofvaryLockfile = serde_json::from_slice(
             &fs::read(manifest.paths.root.join("sofvary.lock.json")).unwrap(),
         )
         .expect("lockfile");
-        assert_eq!(
-            lockfile
-                .runtime_packs
-                .get(REACT_SQLITE_RUNTIME_PACK_ID)
-                .map(String::as_str),
-            Some(REACT_SQLITE_PACK_VERSION)
-        );
-        assert_eq!(
-            lockfile
-                .harness_packs
-                .get(REACT_SQLITE_HARNESS_PACK_ID)
-                .map(String::as_str),
-            Some(REACT_SQLITE_PACK_VERSION)
-        );
-        assert!(!lockfile
-            .runtime_packs
-            .contains_key(REACT_VITE_RUNTIME_PACK_ID));
+        let packs = resolved_packs_for_runtime_kind(&adapter, "react-sqlite");
+        assert_lockfile_matches_packs(&lockfile, &packs);
     }
 
     #[test]
@@ -2213,36 +2164,23 @@ mod tests {
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "Canvas Game".to_string(),
-                RuntimeKind::Canvas2d,
+                "canvas2d".to_string(),
                 &adapter,
             )
             .expect("workspace");
 
-        assert_eq!(manifest.mode, RuntimeKind::Canvas2d);
+        assert_eq!(manifest.mode, "canvas2d".to_string());
         assert!(manifest.paths.generated.join("canvas").exists());
-        assert_eq!(manifest.stack, ["Canvas 2D", "JavaScript"]);
+        for expected in ["Canvas 2D", "JavaScript"] {
+            assert!(manifest.stack.contains(&expected.to_string()));
+        }
 
         let lockfile: SofvaryLockfile = serde_json::from_slice(
             &fs::read(manifest.paths.root.join("sofvary.lock.json")).unwrap(),
         )
         .expect("lockfile");
-        assert_eq!(
-            lockfile
-                .runtime_packs
-                .get(CANVAS2D_RUNTIME_PACK_ID)
-                .map(String::as_str),
-            Some(CANVAS2D_PACK_VERSION)
-        );
-        assert_eq!(
-            lockfile
-                .harness_packs
-                .get(CANVAS2D_HARNESS_PACK_ID)
-                .map(String::as_str),
-            Some(CANVAS2D_PACK_VERSION)
-        );
-        assert!(!lockfile
-            .runtime_packs
-            .contains_key(STATIC_HTML_RUNTIME_PACK_ID));
+        let packs = resolved_packs_for_runtime_kind(&adapter, "canvas2d");
+        assert_lockfile_matches_packs(&lockfile, &packs);
     }
 
     #[test]
@@ -2257,50 +2195,40 @@ mod tests {
         };
         let manager = WorkspaceManager::new();
 
-        for (name, runtime, runtime_pack, harness_pack, version, required_dirs) in [
+        for (name, runtime, required_dirs) in [
             (
                 "Markdown Knowledge",
-                RuntimeKind::MarkdownKnowledge,
-                MARKDOWN_KNOWLEDGE_RUNTIME_PACK_ID,
-                MARKDOWN_KNOWLEDGE_HARNESS_PACK_ID,
-                MARKDOWN_KNOWLEDGE_PACK_VERSION,
+                "markdown-knowledge".to_string(),
                 &["markdown", "react"][..],
             ),
             (
                 "Data Table",
-                RuntimeKind::DataTable,
-                DATA_TABLE_RUNTIME_PACK_ID,
-                DATA_TABLE_HARNESS_PACK_ID,
-                DATA_TABLE_PACK_VERSION,
+                "data-table".to_string(),
                 &["data", "react"][..],
             ),
             (
                 "File Processor",
-                RuntimeKind::FileProcessor,
-                FILE_PROCESSOR_RUNTIME_PACK_ID,
-                FILE_PROCESSOR_HARNESS_PACK_ID,
-                FILE_PROCESSOR_PACK_VERSION,
+                "file-processor".to_string(),
                 &["file-processor", "react"][..],
             ),
             (
                 "Desktop Widget",
-                RuntimeKind::DesktopWidget,
-                DESKTOP_WIDGET_RUNTIME_PACK_ID,
-                DESKTOP_WIDGET_HARNESS_PACK_ID,
-                DESKTOP_WIDGET_PACK_VERSION,
+                "desktop-widget".to_string(),
                 &["widget", "react"][..],
             ),
             (
                 "AI Agent App",
-                RuntimeKind::AiAgentApp,
-                AI_AGENT_APP_RUNTIME_PACK_ID,
-                AI_AGENT_APP_HARNESS_PACK_ID,
-                AI_AGENT_APP_PACK_VERSION,
+                "ai-agent-app".to_string(),
                 &["ai", "react"][..],
             ),
         ] {
+            let packs = resolved_packs_for_runtime_kind(&adapter, &runtime);
             let manifest = manager
-                .create_workspace_for_runtime_with_adapter(name.to_string(), runtime, &adapter)
+                .create_workspace_for_runtime_with_adapter(
+                    name.to_string(),
+                    runtime.clone(),
+                    &adapter,
+                )
                 .expect("workspace");
             assert_eq!(manifest.mode, runtime);
             for dir in required_dirs {
@@ -2311,16 +2239,7 @@ mod tests {
                 &fs::read(manifest.paths.root.join("sofvary.lock.json")).unwrap(),
             )
             .expect("lockfile");
-            assert_eq!(
-                lockfile.runtime_packs.get(runtime_pack).map(String::as_str),
-                Some(version)
-            );
-            assert_eq!(
-                lockfile.harness_packs.get(harness_pack).map(String::as_str),
-                Some(version)
-            );
-            assert_eq!(lockfile.runtime_packs.len(), 1);
-            assert_eq!(lockfile.harness_packs.len(), 1);
+            assert_lockfile_matches_packs(&lockfile, &packs);
             assert!(lockfile.plugin_packs.is_empty());
         }
     }
@@ -2523,7 +2442,7 @@ mod tests {
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "React Replace".to_string(),
-                RuntimeKind::ReactVite,
+                "react-vite".to_string(),
                 &adapter,
             )
             .expect("workspace");
@@ -2553,7 +2472,7 @@ mod tests {
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "React Reject".to_string(),
-                RuntimeKind::ReactVite,
+                "react-vite".to_string(),
                 &adapter,
             )
             .expect("workspace");
@@ -2614,7 +2533,7 @@ mod tests {
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "SQLite Replace".to_string(),
-                RuntimeKind::ReactSqlite,
+                "react-sqlite".to_string(),
                 &adapter,
             )
             .expect("workspace");
@@ -2670,7 +2589,7 @@ mod tests {
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "SQLite Live Delta".to_string(),
-                RuntimeKind::ReactSqlite,
+                "react-sqlite".to_string(),
                 &adapter,
             )
             .expect("workspace");
@@ -2724,7 +2643,7 @@ mod tests {
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "SQLite Package Normalize".to_string(),
-                RuntimeKind::ReactSqlite,
+                "react-sqlite".to_string(),
                 &adapter,
             )
             .expect("workspace");
@@ -2770,7 +2689,7 @@ mod tests {
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "SQLite Existing Package Normalize".to_string(),
-                RuntimeKind::ReactSqlite,
+                "react-sqlite".to_string(),
                 &adapter,
             )
             .expect("workspace");
@@ -2810,7 +2729,7 @@ mod tests {
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "SQLite Existing Vite Normalize".to_string(),
-                RuntimeKind::ReactSqlite,
+                "react-sqlite".to_string(),
                 &adapter,
             )
             .expect("workspace");
@@ -2861,7 +2780,7 @@ export default defineConfig({
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "SQLite Reject".to_string(),
-                RuntimeKind::ReactSqlite,
+                "react-sqlite".to_string(),
                 &adapter,
             )
             .expect("workspace");
@@ -2938,7 +2857,7 @@ export default defineConfig({
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "Canvas Replace".to_string(),
-                RuntimeKind::Canvas2d,
+                "canvas2d".to_string(),
                 &adapter,
             )
             .expect("workspace");
@@ -2975,7 +2894,7 @@ export default defineConfig({
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "Canvas Reject".to_string(),
-                RuntimeKind::Canvas2d,
+                "canvas2d".to_string(),
                 &adapter,
             )
             .expect("workspace");
@@ -3040,7 +2959,7 @@ export default defineConfig({
         let manifest = manager
             .create_workspace_for_runtime_with_adapter(
                 "Markdown Symlink".to_string(),
-                RuntimeKind::MarkdownKnowledge,
+                "markdown-knowledge".to_string(),
                 &adapter,
             )
             .expect("workspace");

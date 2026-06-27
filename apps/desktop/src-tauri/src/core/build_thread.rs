@@ -445,7 +445,7 @@ mod tests {
                 CreateBuildThreadRequest {
                     title: "Initial".to_string(),
                     prompt: "prompt".to_string(),
-                    runtime_kind: RuntimeKind::StaticHtml,
+                    runtime_kind: "static-html".to_string(),
                     runtime_mode: RuntimeMode::Dev,
                     agent_id: "agent".to_string(),
                     agent_mode: AgentInteractionMode::PiNative,
@@ -484,7 +484,7 @@ mod tests {
                 CreateBuildThreadRequest {
                     title: "Target".to_string(),
                     prompt: "target".to_string(),
-                    runtime_kind: RuntimeKind::StaticHtml,
+                    runtime_kind: "static-html".to_string(),
                     runtime_mode: RuntimeMode::Dev,
                     agent_id: "agent".to_string(),
                     agent_mode: AgentInteractionMode::PiNative,
@@ -502,7 +502,7 @@ mod tests {
                 CreateBuildThreadRequest {
                     title: "Other".to_string(),
                     prompt: "other".to_string(),
-                    runtime_kind: RuntimeKind::StaticHtml,
+                    runtime_kind: "static-html".to_string(),
                     runtime_mode: RuntimeMode::Dev,
                     agent_id: "agent".to_string(),
                     agent_mode: AgentInteractionMode::PiNative,
@@ -534,7 +534,7 @@ mod tests {
                 CreateBuildThreadRequest {
                     title: "Target".to_string(),
                     prompt: "target".to_string(),
-                    runtime_kind: RuntimeKind::StaticHtml,
+                    runtime_kind: "static-html".to_string(),
                     runtime_mode: RuntimeMode::Dev,
                     agent_id: "agent".to_string(),
                     agent_mode: AgentInteractionMode::PiNative,
@@ -547,7 +547,7 @@ mod tests {
                 CreateBuildThreadRequest {
                     title: "Other".to_string(),
                     prompt: "other".to_string(),
-                    runtime_kind: RuntimeKind::StaticHtml,
+                    runtime_kind: "static-html".to_string(),
                     runtime_mode: RuntimeMode::Dev,
                     agent_id: "agent".to_string(),
                     agent_mode: AgentInteractionMode::PiNative,
@@ -581,7 +581,7 @@ mod tests {
                 CreateBuildThreadRequest {
                     title: "Target".to_string(),
                     prompt: "target".to_string(),
-                    runtime_kind: RuntimeKind::StaticHtml,
+                    runtime_kind: "static-html".to_string(),
                     runtime_mode: RuntimeMode::Dev,
                     agent_id: "agent".to_string(),
                     agent_mode: AgentInteractionMode::PiNative,

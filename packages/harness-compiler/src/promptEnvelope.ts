@@ -8,16 +8,7 @@ export interface PackReference {
 export interface BoxRuntimeContext {
   runtimePack: PackReference;
   harnessPacks: PackReference[];
-  runtimeKind:
-    | "static-html"
-    | "react-vite"
-    | "react-sqlite"
-    | "canvas2d"
-    | "markdown-knowledge"
-    | "data-table"
-    | "file-processor"
-    | "desktop-widget"
-    | "ai-agent-app";
+  runtimeKind: string;
   generatedRoot: string;
   entrypoint: string;
   bind: "127.0.0.1";
@@ -41,20 +32,11 @@ export interface CurrentAppState {
 }
 
 export interface RuntimePolicy {
-  runtimeKind:
-    | "static-html"
-    | "react-vite"
-    | "react-sqlite"
-    | "canvas2d"
-    | "markdown-knowledge"
-    | "data-table"
-    | "file-processor"
-    | "desktop-widget"
-    | "ai-agent-app";
+  runtimeKind: string;
   allowedEntrypoints: string[];
   allowedServerBind: "127.0.0.1";
   network: "local-only";
-  packageInstall: false;
+  packageInstall: boolean;
 }
 
 export interface HarnessPolicy {
@@ -72,25 +54,16 @@ export interface FileSystemPolicy {
 }
 
 export interface CommandPolicy {
-  allowShell: false;
-  allowPackageInstall: false;
-  allowGlobalInstall: false;
+  allowShell: boolean;
+  allowPackageInstall: boolean;
+  allowGlobalInstall: boolean;
   allowedCommands: string[];
 }
 
 export interface OutputContract {
-  format:
-    | "static-html-files"
-    | "react-vite-project"
-    | "react-sqlite-project"
-    | "canvas2d-project"
-    | "markdown-knowledge-project"
-    | "data-table-project"
-    | "file-processor-project"
-    | "desktop-widget-project"
-    | "ai-agent-app-project";
+  format: string;
   files: string[];
-  shellUiIncluded: false;
+  shellUiIncluded: boolean;
 }
 
 export interface PromptEnvelope {

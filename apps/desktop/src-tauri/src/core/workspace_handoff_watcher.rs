@@ -143,7 +143,7 @@ mod tests {
         OutputContract, PackReference, RuntimePolicy,
     };
     use crate::core::workspace_types::{
-        AppBoxManifest, RuntimeKind, WorkspaceConstraints, WorkspacePaths, WorkspacePreview,
+        AppBoxManifest, WorkspaceConstraints, WorkspacePaths, WorkspacePreview,
     };
 
     #[test]
@@ -191,7 +191,7 @@ mod tests {
         AppBoxManifest {
             app_id: "app_test".to_string(),
             name: "Test".to_string(),
-            mode: RuntimeKind::StaticHtml,
+            mode: "static-html".to_string(),
             created_at: "2026-06-22T00:00:00Z".to_string(),
             updated_at: "2026-06-22T00:00:00Z".to_string(),
             stack: vec!["static".to_string()],

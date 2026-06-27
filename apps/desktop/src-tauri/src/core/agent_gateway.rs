@@ -3803,7 +3803,7 @@ mod tests {
     fn mock_adapter_event_flow_writes_react_vite_files() {
         let temp = TempDir::new().expect("tempdir");
         let workspace_manager = WorkspaceManager::new();
-        let manifest = test_manifest_with_mode(temp.path(), WorkspaceMode::ReactVite);
+        let manifest = test_manifest_with_mode(temp.path(), "react-vite".to_string());
         let envelope = test_react_prompt_envelope("Build a React task board");
 
         let gateway = AgentGateway::new(MockAgentAdapter);
@@ -3848,7 +3848,7 @@ mod tests {
     fn mock_adapter_event_flow_writes_react_sqlite_files() {
         let temp = TempDir::new().expect("tempdir");
         let workspace_manager = WorkspaceManager::new();
-        let manifest = test_manifest_with_mode(temp.path(), WorkspaceMode::ReactSqlite);
+        let manifest = test_manifest_with_mode(temp.path(), "react-sqlite".to_string());
         let envelope = test_react_sqlite_prompt_envelope("Build a customer CRM");
 
         let gateway = AgentGateway::new(MockAgentAdapter);
@@ -3905,7 +3905,7 @@ mod tests {
     fn mock_adapter_event_flow_writes_canvas2d_files() {
         let temp = TempDir::new().expect("tempdir");
         let workspace_manager = WorkspaceManager::new();
-        let manifest = test_manifest_with_mode(temp.path(), WorkspaceMode::Canvas2d);
+        let manifest = test_manifest_with_mode(temp.path(), "canvas2d".to_string());
         let envelope = test_canvas2d_prompt_envelope("Build a coin chase game");
 
         let gateway = AgentGateway::new(MockAgentAdapter);
@@ -3955,7 +3955,7 @@ mod tests {
     fn mock_adapter_event_flow_writes_phase12_to15_project_files() {
         let cases = [
             (
-                WorkspaceMode::MarkdownKnowledge,
+                "markdown-knowledge".to_string(),
                 "markdown-knowledge",
                 "Build reading notes",
                 "markdown/index.json",
@@ -3964,7 +3964,7 @@ mod tests {
                 10,
             ),
             (
-                WorkspaceMode::DataTable,
+                "data-table".to_string(),
                 "data-table",
                 "Build inventory table",
                 "data/tables/inventory.json",
@@ -3973,7 +3973,7 @@ mod tests {
                 10,
             ),
             (
-                WorkspaceMode::FileProcessor,
+                "file-processor".to_string(),
                 "file-processor",
                 "Build batch rename",
                 "file-processor/policy.json",
@@ -3982,7 +3982,7 @@ mod tests {
                 10,
             ),
             (
-                WorkspaceMode::DesktopWidget,
+                "desktop-widget".to_string(),
                 "desktop-widget",
                 "Build pomodoro widget",
                 "widget/manifest.json",
@@ -4004,8 +4004,8 @@ mod tests {
         {
             let temp = TempDir::new().expect("tempdir");
             let workspace_manager = WorkspaceManager::new();
-            let manifest = test_manifest_with_mode(temp.path(), mode);
-            let envelope = test_phase12_to15_prompt_envelope(intent, mode);
+            let manifest = test_manifest_with_mode(temp.path(), mode.clone());
+            let envelope = test_phase12_to15_prompt_envelope(intent, mode.clone());
 
             let session = AgentGateway::new(MockAgentAdapter)
                 .run(&manifest, &envelope, &workspace_manager)
@@ -4033,7 +4033,7 @@ mod tests {
             assert!(!component.contains("BuildOverlay"));
             assert!(!component.contains("Sofvary UI"));
 
-            if mode == WorkspaceMode::FileProcessor {
+            if mode == "file-processor" {
                 assert!(!component.contains("selected demo files"));
                 assert!(!component.contains("Plan confirmed and logged"));
             }
@@ -4044,7 +4044,7 @@ mod tests {
     fn mock_adapter_event_flow_writes_ai_agent_app_files() {
         let temp = TempDir::new().expect("tempdir");
         let workspace_manager = WorkspaceManager::new();
-        let manifest = test_manifest_with_mode(temp.path(), WorkspaceMode::AiAgentApp);
+        let manifest = test_manifest_with_mode(temp.path(), "ai-agent-app".to_string());
         let envelope =
             test_ai_agent_app_prompt_envelope("Build an article, image, and video agent app");
 
@@ -4216,89 +4216,89 @@ mod tests {
         let runtime = parse_runtime_pack_manifest(RUNTIME_MANIFEST).expect("runtime");
         let harness = parse_harness_pack_manifest(HARNESS_MANIFEST).expect("harness");
         HarnessEngine::new()
-            .create_static_html_envelope(user_intent, &manifest, &runtime, &harness)
+            .create_envelope(user_intent, &manifest, &runtime, &harness)
             .expect("prompt envelope")
     }
 
     fn test_react_prompt_envelope(user_intent: &str) -> PromptEnvelope {
         let temp = TempDir::new().expect("tempdir");
-        let manifest = test_manifest_with_mode(temp.path(), WorkspaceMode::ReactVite);
+        let manifest = test_manifest_with_mode(temp.path(), "react-vite".to_string());
         let runtime = parse_runtime_pack_manifest(REACT_RUNTIME_MANIFEST).expect("runtime");
         let harness = parse_harness_pack_manifest(REACT_HARNESS_MANIFEST).expect("harness");
         HarnessEngine::new()
-            .create_react_vite_envelope(user_intent, &manifest, &runtime, &harness)
+            .create_envelope(user_intent, &manifest, &runtime, &harness)
             .expect("prompt envelope")
     }
 
     fn test_react_sqlite_prompt_envelope(user_intent: &str) -> PromptEnvelope {
         let temp = TempDir::new().expect("tempdir");
-        let manifest = test_manifest_with_mode(temp.path(), WorkspaceMode::ReactSqlite);
+        let manifest = test_manifest_with_mode(temp.path(), "react-sqlite".to_string());
         let runtime = parse_runtime_pack_manifest(REACT_SQLITE_RUNTIME_MANIFEST).expect("runtime");
         let harness = parse_harness_pack_manifest(REACT_SQLITE_HARNESS_MANIFEST).expect("harness");
         HarnessEngine::new()
-            .create_react_sqlite_envelope(user_intent, &manifest, &runtime, &harness)
+            .create_envelope(user_intent, &manifest, &runtime, &harness)
             .expect("prompt envelope")
     }
 
     fn test_ai_agent_app_prompt_envelope(user_intent: &str) -> PromptEnvelope {
         let temp = TempDir::new().expect("tempdir");
-        let manifest = test_manifest_with_mode(temp.path(), WorkspaceMode::AiAgentApp);
+        let manifest = test_manifest_with_mode(temp.path(), "ai-agent-app".to_string());
         let runtime = parse_runtime_pack_manifest(AI_AGENT_APP_RUNTIME_MANIFEST).expect("runtime");
         let harness = parse_harness_pack_manifest(AI_AGENT_APP_HARNESS_MANIFEST).expect("harness");
         HarnessEngine::new()
-            .create_ai_agent_app_envelope(user_intent, &manifest, &runtime, &harness)
+            .create_envelope(user_intent, &manifest, &runtime, &harness)
             .expect("prompt envelope")
     }
 
     fn test_canvas2d_prompt_envelope(user_intent: &str) -> PromptEnvelope {
         let temp = TempDir::new().expect("tempdir");
-        let manifest = test_manifest_with_mode(temp.path(), WorkspaceMode::Canvas2d);
+        let manifest = test_manifest_with_mode(temp.path(), "canvas2d".to_string());
         let runtime = parse_runtime_pack_manifest(CANVAS2D_RUNTIME_MANIFEST).expect("runtime");
         let harness = parse_harness_pack_manifest(CANVAS2D_HARNESS_MANIFEST).expect("harness");
         HarnessEngine::new()
-            .create_canvas2d_envelope(user_intent, &manifest, &runtime, &harness)
+            .create_envelope(user_intent, &manifest, &runtime, &harness)
             .expect("prompt envelope")
     }
 
     fn test_phase12_to15_prompt_envelope(user_intent: &str, mode: WorkspaceMode) -> PromptEnvelope {
         let temp = TempDir::new().expect("tempdir");
-        let manifest = test_manifest_with_mode(temp.path(), mode);
+        let manifest = test_manifest_with_mode(temp.path(), mode.clone());
         let engine = HarnessEngine::new();
         match mode {
-            WorkspaceMode::MarkdownKnowledge => {
+            mode if mode == "markdown-knowledge" => {
                 let runtime = parse_runtime_pack_manifest(MARKDOWN_KNOWLEDGE_RUNTIME_MANIFEST)
                     .expect("runtime");
                 let harness = parse_harness_pack_manifest(MARKDOWN_KNOWLEDGE_HARNESS_MANIFEST)
                     .expect("harness");
                 engine
-                    .create_markdown_knowledge_envelope(user_intent, &manifest, &runtime, &harness)
+                    .create_envelope(user_intent, &manifest, &runtime, &harness)
                     .expect("prompt envelope")
             }
-            WorkspaceMode::DataTable => {
+            mode if mode == "data-table" => {
                 let runtime =
                     parse_runtime_pack_manifest(DATA_TABLE_RUNTIME_MANIFEST).expect("runtime");
                 let harness =
                     parse_harness_pack_manifest(DATA_TABLE_HARNESS_MANIFEST).expect("harness");
                 engine
-                    .create_data_table_envelope(user_intent, &manifest, &runtime, &harness)
+                    .create_envelope(user_intent, &manifest, &runtime, &harness)
                     .expect("prompt envelope")
             }
-            WorkspaceMode::FileProcessor => {
+            mode if mode == "file-processor" => {
                 let runtime =
                     parse_runtime_pack_manifest(FILE_PROCESSOR_RUNTIME_MANIFEST).expect("runtime");
                 let harness =
                     parse_harness_pack_manifest(FILE_PROCESSOR_HARNESS_MANIFEST).expect("harness");
                 engine
-                    .create_file_processor_envelope(user_intent, &manifest, &runtime, &harness)
+                    .create_envelope(user_intent, &manifest, &runtime, &harness)
                     .expect("prompt envelope")
             }
-            WorkspaceMode::DesktopWidget => {
+            mode if mode == "desktop-widget" => {
                 let runtime =
                     parse_runtime_pack_manifest(DESKTOP_WIDGET_RUNTIME_MANIFEST).expect("runtime");
                 let harness =
                     parse_harness_pack_manifest(DESKTOP_WIDGET_HARNESS_MANIFEST).expect("harness");
                 engine
-                    .create_desktop_widget_envelope(user_intent, &manifest, &runtime, &harness)
+                    .create_envelope(user_intent, &manifest, &runtime, &harness)
                     .expect("prompt envelope")
             }
             _ => panic!("unsupported generated project mode"),
@@ -4306,7 +4306,7 @@ mod tests {
     }
 
     fn test_manifest(base: &std::path::Path) -> AppBoxManifest {
-        test_manifest_with_mode(base, WorkspaceMode::StaticHtml)
+        test_manifest_with_mode(base, "static-html".to_string())
     }
 
     fn test_manifest_with_mode(base: &std::path::Path, mode: WorkspaceMode) -> AppBoxManifest {

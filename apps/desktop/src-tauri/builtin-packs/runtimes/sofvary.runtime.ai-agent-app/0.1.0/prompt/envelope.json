@@ -1,0 +1,85 @@
+{
+  "outputFormat": "ai-agent-app-project",
+  "allowedFiles": [
+    "ai/agents.json",
+    "ai/provider-requirements.json",
+    "ai/jobs.seed.json",
+    "react/package.json",
+    "react/index.html",
+    "react/vite.config.ts",
+    "react/tsconfig.json",
+    "react/src/main.tsx",
+    "react/src/App.tsx",
+    "react/src/components/AiAgentApp.tsx",
+    "react/src/components/ProviderSettings.tsx",
+    "react/src/components/ArtifactGallery.tsx",
+    "react/src/styles/app.css"
+  ],
+  "fileSystemRoot": "generated",
+  "runtimePolicy": {
+    "packageInstall": false
+  },
+  "commandPolicy": {
+    "allowShell": false,
+    "allowPackageInstall": false,
+    "allowGlobalInstall": false,
+    "allowedCommands": []
+  },
+  "harnessPolicy": {
+    "systemInstructions": [
+      "Generate a React + Vite AI Agent App with provider binding UI, job creation, job status, and artifact gallery.",
+      "The generated app may request text, image, and video capabilities only through the Sofvary AI Gateway on 127.0.0.1.",
+      "Never call OpenAI, OpenAI-compatible, Ollama, or any provider API directly from generated app source.",
+      "Never write API keys, secure key refs, author-local provider ids, or Coding Agent Gateway access into generated files."
+    ],
+    "fileSystemRules": [
+      "Write React UI files only inside generated/react.",
+      "Write provider requirement and seed metadata only inside generated/ai.",
+      "Do not read or write paths outside the active Sofvary workspace.",
+      "Do not create files outside the AI Agent App output contract."
+    ],
+    "outputRules": [
+      "Provider settings must bind provider requirements to a shell-owned local provider profile without storing secrets.",
+      "Generated app requests must target /__sofvary/ai/* or relative gateway proxy paths only.",
+      "Capsule metadata must describe provider requirements only and must not include secrets, secure key refs, or local provider ids.",
+      "Imported AI Agent Apps must be able to render a needs-provider-binding state.",
+      "Keep Sofvary shell UI, floating menu, build overlay, and Coding Agent Gateway out of generated app source."
+    ],
+    "blockedCapabilities": [
+      "arbitrary-network",
+      "coding-agent-gateway-access",
+      "direct-provider-network",
+      "local-provider-id-export",
+      "plaintext-api-key",
+      "plugin-execution",
+      "remote-network",
+      "secure-key-ref-export",
+      "secret-export",
+      "shell-command",
+      "sofvary-shell-ui"
+    ]
+  },
+  "acceptanceCriteria": [
+    "Generated output contains exactly the AI Agent App project file set.",
+    "Generated provider settings UI stores only provider requirements and binding status.",
+    "Generated app calls only the Sofvary AI Gateway on 127.0.0.1 and never calls provider APIs directly.",
+    "Generated source, logs, and capsule metadata do not include API keys, secure key refs, local provider ids, or Coding Agent Gateway access.",
+    "Generated app can create text, image, video, or multimodal jobs through local gateway request envelopes.",
+    "Harness {{harness.id}}@{{harness.version}} constraints are represented in the prompt envelope.",
+    "Before writing UI text, choose a concise software name. Use '{{workspace.name}}' unless you can derive a better short domain name from the user intent.",
+    "Visible app title and browser title must use the concise software name, not the full user requirement.",
+    "Do not render PromptEnvelope text, runtime repair fallback text, diagnostic text, or Sofvary shell copy inside the generated app UI."
+  ],
+  "updateMode": {
+    "systemInstructions": [
+      "This is an update to an existing Sofvary app. Use currentAppState.fileContext as the existing implementation context before changing files.",
+      "Do not rebuild from zero, switch Runtime, change the output contract, or discard existing behavior unless userIntent explicitly asks for it."
+    ],
+    "outputRules": [
+      "For update mode, return the complete allowed file set after applying the requested change so the workspace remains runnable."
+    ],
+    "acceptanceCriteria": [
+      "Update mode preserves existing app behavior and applies the new request on top of currentAppState.fileContext."
+    ]
+  }
+}

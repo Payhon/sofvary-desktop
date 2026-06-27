@@ -1,4 +1,4 @@
-use crate::core::harness_engine::{PromptEnvelope, REACT_VITE_ALLOWED_FILES};
+use crate::core::harness_engine::PromptEnvelope;
 use crate::core::pack_types::{PackCommandSpec, RuntimePackManifest};
 use crate::core::policy_engine::{PolicyEngine, PolicyError};
 use crate::core::policy_types::{PolicyApprovalSet, PolicyCommandRequest};
@@ -589,32 +589,54 @@ fn validate_prompt_envelope(envelope: &PromptEnvelope) -> Result<(), ReactViteRu
             envelope.output_contract.format
         )));
     }
-    ensure_exact_react_files(
-        "fileSystemPolicy.allowedFiles",
-        &envelope.file_system_policy.allowed_files,
-    )?;
-    ensure_exact_react_files("outputContract.files", &envelope.output_contract.files)?;
+    ensure_allowed_files_match_output_contract(envelope)?;
 
     Ok(())
 }
 
-fn ensure_exact_react_files(field: &str, files: &[String]) -> Result<(), ReactViteRuntimeError> {
-    let expected: HashSet<&str> = REACT_VITE_ALLOWED_FILES.iter().copied().collect();
-    let actual: HashSet<&str> = files.iter().map(String::as_str).collect();
-    if expected == actual && files.len() == REACT_VITE_ALLOWED_FILES.len() {
-        Ok(())
-    } else {
-        Err(ReactViteRuntimeError::InvalidPromptEnvelope(format!(
-            "{field} must contain exactly the React + Vite project file set"
-        )))
+fn ensure_allowed_files_match_output_contract(
+    envelope: &PromptEnvelope,
+) -> Result<(), ReactViteRuntimeError> {
+    if envelope.file_system_policy.allowed_files.is_empty() {
+        return Err(ReactViteRuntimeError::InvalidPromptEnvelope(
+            "react-vite output contract must declare at least one allowed file".to_string(),
+        ));
     }
+
+    for file in envelope
+        .file_system_policy
+        .allowed_files
+        .iter()
+        .chain(envelope.output_contract.files.iter())
+    {
+        validate_relative_contract_file(file)?;
+    }
+
+    let expected: HashSet<&str> = envelope
+        .file_system_policy
+        .allowed_files
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let actual: HashSet<&str> = envelope
+        .output_contract
+        .files
+        .iter()
+        .map(String::as_str)
+        .collect();
+    if expected == actual && expected.len() == envelope.output_contract.files.len() {
+        return Ok(());
+    }
+
+    Err(ReactViteRuntimeError::InvalidPromptEnvelope(
+        "fileSystemPolicy.allowedFiles and outputContract.files must match".to_string(),
+    ))
 }
 
 fn ensure_exact_workspace_react_files(
     manifest: &AppBoxManifest,
     allowed_files: &[String],
 ) -> Result<(), ReactViteRuntimeError> {
-    ensure_exact_react_files("workspace.generatedReact", allowed_files)?;
     let react_root = prepare_react_root(manifest)?;
     let expected: HashSet<String> = allowed_files.iter().cloned().collect();
     let mut actual = HashSet::new();
@@ -646,6 +668,29 @@ fn collect_relative_files<'a>(
                 .map_err(|_| ReactViteRuntimeError::PathEscape)?;
             files.insert(relative.to_string_lossy().replace('\\', "/"));
         }
+    }
+    Ok(())
+}
+
+fn validate_relative_contract_file(path: &str) -> Result<(), ReactViteRuntimeError> {
+    if path.trim().is_empty()
+        || path.contains('\\')
+        || path.starts_with('/')
+        || path
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "..")
+        || Path::new(path).components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(ReactViteRuntimeError::InvalidPromptEnvelope(format!(
+            "output contract file path must stay relative inside generated/react: {path}"
+        )));
     }
     Ok(())
 }
@@ -868,9 +913,7 @@ mod tests {
         OutputContract, PackReference, RuntimePolicy,
     };
     use crate::core::pack_manager::parse_runtime_pack_manifest;
-    use crate::core::workspace_types::{
-        RuntimeKind, WorkspaceConstraints, WorkspacePaths, WorkspacePreview,
-    };
+    use crate::core::workspace_types::{WorkspaceConstraints, WorkspacePaths, WorkspacePreview};
     use crate::platform::{
         ArchKind, OsKind, PlatformDirs, PlatformResult, ProcessHandle, ProcessOutput,
         WebviewProfile, WorkArea,
@@ -1059,7 +1102,7 @@ mod tests {
         AppBoxManifest {
             app_id: "app_test".to_string(),
             name: "Test".to_string(),
-            mode: RuntimeKind::ReactVite,
+            mode: "react-vite".to_string(),
             created_at: "now".to_string(),
             updated_at: "now".to_string(),
             stack: vec![],
@@ -1083,6 +1126,7 @@ mod tests {
     }
 
     fn test_envelope() -> PromptEnvelope {
+        let allowed_files = react_vite_test_files();
         PromptEnvelope {
             schema_version: "1.0".to_string(),
             envelope_id: "penv_react_test".to_string(),
@@ -1126,10 +1170,7 @@ mod tests {
             },
             file_system_policy: FileSystemPolicy {
                 root: "generated/react".to_string(),
-                allowed_files: REACT_VITE_ALLOWED_FILES
-                    .iter()
-                    .map(|value| value.to_string())
-                    .collect(),
+                allowed_files: allowed_files.clone(),
                 allow_external_files: false,
                 allow_path_traversal: false,
             },
@@ -1141,13 +1182,26 @@ mod tests {
             },
             output_contract: OutputContract {
                 format: "react-vite-project".to_string(),
-                files: REACT_VITE_ALLOWED_FILES
-                    .iter()
-                    .map(|value| value.to_string())
-                    .collect(),
+                files: allowed_files,
                 shell_ui_included: false,
             },
             acceptance_criteria: Vec::new(),
         }
+    }
+
+    fn react_vite_test_files() -> Vec<String> {
+        [
+            "package.json",
+            "index.html",
+            "vite.config.ts",
+            "tsconfig.json",
+            "src/main.tsx",
+            "src/App.tsx",
+            "src/components/TaskBoard.tsx",
+            "src/styles/app.css",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
     }
 }

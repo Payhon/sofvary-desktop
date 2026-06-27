@@ -14,31 +14,25 @@ const installStatePriority: Record<RuntimeEnvironmentInstallState, number> = {
   unsupported: 3,
 };
 
-const nodeToolchainRuntimeKinds: RuntimeKind[] = [
-  "react-vite",
-  "react-sqlite",
-  "ai-agent-app",
-  "markdown-knowledge",
-  "data-table",
-  "file-processor",
-  "desktop-widget",
-];
-
 export interface RuntimeEnvironmentRequirementIssue {
   runtimeKind: RuntimeKind;
   runtimeEnvironmentKind: "nodejs";
   message: string;
 }
 
-export function runtimeRequiresNodeToolchain(runtimeKind: RuntimeKind): boolean {
-  return nodeToolchainRuntimeKinds.includes(runtimeKind);
+export function runtimeRequiresNodeToolchain(
+  _runtimeKind: RuntimeKind,
+  requiredToolchains: readonly string[] = [],
+): boolean {
+  return requiredToolchains.includes("nodejs");
 }
 
 export function getRuntimeEnvironmentRequirementIssue(
   runtimeKind: RuntimeKind,
   statuses: RuntimeEnvironmentStatus[],
+  requiredToolchains: readonly string[] = [],
 ): RuntimeEnvironmentRequirementIssue | null {
-  if (!runtimeRequiresNodeToolchain(runtimeKind)) return null;
+  if (!runtimeRequiresNodeToolchain(runtimeKind, requiredToolchains)) return null;
 
   const nodeStatus = statuses.find((status) => status.catalog.kind === "nodejs");
   const nodeReady = nodeStatus?.node?.ok === true;

@@ -24,14 +24,13 @@ pub enum ReactProjectRuntimeError {
 
 pub type ReactProjectRuntimeServer = ReactViteRuntimeServer;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ReactProjectRuntimeSpec {
-    pub runtime_kind: &'static str,
-    pub generated_root: &'static str,
-    pub entrypoint: &'static str,
-    pub output_format: &'static str,
-    pub allowed_files: &'static [&'static str],
-    pub label: &'static str,
+    pub runtime_kind: String,
+    pub generated_root: String,
+    pub entrypoint: String,
+    pub output_format: String,
+    pub label: String,
 }
 
 pub struct ReactProjectRuntime {
@@ -43,11 +42,21 @@ impl ReactProjectRuntime {
         Self { spec }
     }
 
+    pub fn for_runtime_pack(runtime_pack: &RuntimePackManifest) -> Self {
+        Self::new(ReactProjectRuntimeSpec {
+            runtime_kind: runtime_pack.runtime.kind.clone(),
+            generated_root: runtime_pack.runtime.generated_root.clone(),
+            entrypoint: runtime_pack.runtime.entrypoint.clone(),
+            output_format: String::new(),
+            label: runtime_pack.name.clone(),
+        })
+    }
+
     pub fn validate_prompt_envelope(
         &self,
         envelope: &PromptEnvelope,
     ) -> Result<(), ReactProjectRuntimeError> {
-        validate_prompt_envelope(self.spec, envelope)
+        validate_prompt_envelope(&self.spec, envelope)
     }
 
     #[allow(dead_code)]
@@ -76,7 +85,11 @@ impl ReactProjectRuntime {
         approvals: &PolicyApprovalSet,
     ) -> Result<ReactProjectRuntimeServer, ReactProjectRuntimeError> {
         self.validate_prompt_envelope(envelope)?;
-        ensure_exact_workspace_project_files(manifest, self.spec)?;
+        ensure_exact_workspace_project_files(
+            manifest,
+            &self.spec,
+            &envelope.output_contract.files,
+        )?;
         Ok(
             ReactViteRuntime::new().start_verified_react_project_with_policy(
                 manifest,
@@ -89,7 +102,7 @@ impl ReactProjectRuntime {
 }
 
 pub fn validate_prompt_envelope(
-    spec: ReactProjectRuntimeSpec,
+    spec: &ReactProjectRuntimeSpec,
     envelope: &PromptEnvelope,
 ) -> Result<(), ReactProjectRuntimeError> {
     if envelope.box_runtime_context.runtime_kind != spec.runtime_kind {
@@ -169,36 +182,24 @@ pub fn validate_prompt_envelope(
             spec.runtime_kind
         )));
     }
-    if envelope.output_contract.format != spec.output_format {
+    if !spec.output_format.is_empty() && envelope.output_contract.format != spec.output_format {
         return Err(ReactProjectRuntimeError::InvalidPromptEnvelope(format!(
             "outputContract.format must be {}, found {}",
             spec.output_format, envelope.output_contract.format
         )));
     }
-    ensure_exact_files(
-        "fileSystemPolicy.allowedFiles",
-        &envelope.file_system_policy.allowed_files,
-        spec,
-    )?;
-    ensure_exact_files(
-        "outputContract.files",
-        &envelope.output_contract.files,
-        spec,
-    )?;
+    ensure_allowed_files_match_output_contract(envelope, spec)?;
 
     Ok(())
 }
 
 pub fn ensure_exact_workspace_project_files(
     manifest: &AppBoxManifest,
-    spec: ReactProjectRuntimeSpec,
+    spec: &ReactProjectRuntimeSpec,
+    allowed_files: &[String],
 ) -> Result<(), ReactProjectRuntimeError> {
     let generated_root = prepare_generated_root(manifest)?;
-    let expected: HashSet<String> = spec
-        .allowed_files
-        .iter()
-        .map(|value| value.to_string())
-        .collect();
+    let expected: HashSet<String> = allowed_files.iter().cloned().collect();
     let mut actual = HashSet::new();
     collect_relative_files(&generated_root, &generated_root, &mut actual)?;
 
@@ -212,21 +213,46 @@ pub fn ensure_exact_workspace_project_files(
     Ok(())
 }
 
-fn ensure_exact_files(
-    field: &str,
-    files: &[String],
-    spec: ReactProjectRuntimeSpec,
+fn ensure_allowed_files_match_output_contract(
+    envelope: &PromptEnvelope,
+    spec: &ReactProjectRuntimeSpec,
 ) -> Result<(), ReactProjectRuntimeError> {
-    let expected: HashSet<&str> = spec.allowed_files.iter().copied().collect();
-    let actual: HashSet<&str> = files.iter().map(String::as_str).collect();
-    if expected == actual && files.len() == spec.allowed_files.len() {
-        Ok(())
-    } else {
-        Err(ReactProjectRuntimeError::InvalidPromptEnvelope(format!(
-            "{field} must contain exactly the {} project file set",
+    if envelope.file_system_policy.allowed_files.is_empty() {
+        return Err(ReactProjectRuntimeError::InvalidPromptEnvelope(format!(
+            "{} output contract must declare at least one allowed file",
             spec.label
-        )))
+        )));
     }
+
+    for field in [
+        &envelope.file_system_policy.allowed_files,
+        &envelope.output_contract.files,
+    ] {
+        for file in field {
+            validate_relative_contract_file(file)?;
+        }
+    }
+
+    let expected: HashSet<&str> = envelope
+        .file_system_policy
+        .allowed_files
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let actual: HashSet<&str> = envelope
+        .output_contract
+        .files
+        .iter()
+        .map(String::as_str)
+        .collect();
+    if expected == actual && expected.len() == envelope.output_contract.files.len() {
+        return Ok(());
+    }
+
+    Err(ReactProjectRuntimeError::InvalidPromptEnvelope(format!(
+        "fileSystemPolicy.allowedFiles and outputContract.files must match for {}",
+        spec.label
+    )))
 }
 
 fn collect_relative_files<'a>(
@@ -245,6 +271,29 @@ fn collect_relative_files<'a>(
                 .map_err(|_| ReactProjectRuntimeError::PathEscape)?;
             files.insert(relative.to_string_lossy().replace('\\', "/"));
         }
+    }
+    Ok(())
+}
+
+fn validate_relative_contract_file(path: &str) -> Result<(), ReactProjectRuntimeError> {
+    if path.trim().is_empty()
+        || path.contains('\\')
+        || path.starts_with('/')
+        || path
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "..")
+        || Path::new(path).components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(ReactProjectRuntimeError::InvalidPromptEnvelope(format!(
+            "output contract file path must stay relative inside generated root: {path}"
+        )));
     }
     Ok(())
 }

@@ -1,4 +1,4 @@
-use crate::core::harness_engine::{PromptEnvelope, STATIC_HTML_ALLOWED_FILES};
+use crate::core::harness_engine::PromptEnvelope;
 #[cfg(test)]
 use crate::core::software_naming::suggest_software_name;
 use crate::core::workspace_types::AppBoxManifest;
@@ -210,6 +210,16 @@ action?.addEventListener("click", () => {
         &self,
         manifest: &AppBoxManifest,
     ) -> Result<StaticRuntimeServer, StaticRuntimeError> {
+        let static_root = prepare_static_root(manifest)?;
+        let allowed_files = list_relative_files(&static_root)?;
+        self.start_workspace_with_allowed_files(manifest, allowed_files)
+    }
+
+    fn start_workspace_with_allowed_files(
+        &self,
+        manifest: &AppBoxManifest,
+        allowed_files: Vec<String>,
+    ) -> Result<StaticRuntimeServer, StaticRuntimeError> {
         let adapter = current_adapter();
         let port = adapter.allocate_local_port()?;
         let bind_addr = ("127.0.0.1", port);
@@ -217,6 +227,7 @@ action?.addEventListener("click", () => {
         listener.set_nonblocking(true)?;
         let static_root = prepare_static_root(manifest)?;
         let served_root = static_root.clone();
+        let served_allowed_files = Arc::new(allowed_files);
         let app_id = manifest.app_id.clone();
         let stop_requested = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop_requested);
@@ -225,7 +236,7 @@ action?.addEventListener("click", () => {
             while !thread_stop.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        let _ = handle_connection(stream, &served_root);
+                        let _ = handle_connection(stream, &served_root, &served_allowed_files);
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(25));
@@ -258,7 +269,7 @@ action?.addEventListener("click", () => {
     ) -> Result<StaticRuntimeServer, StaticRuntimeError> {
         self.validate_prompt_envelope(envelope)?;
         ensure_exact_workspace_static_files(manifest, &envelope.output_contract.files)?;
-        self.start_workspace(manifest)
+        self.start_workspace_with_allowed_files(manifest, envelope.output_contract.files.clone())
     }
 
     pub fn validate_prompt_envelope(
@@ -269,7 +280,11 @@ action?.addEventListener("click", () => {
     }
 }
 
-fn handle_connection(mut stream: TcpStream, static_root: &Path) -> Result<(), StaticRuntimeError> {
+fn handle_connection(
+    mut stream: TcpStream,
+    static_root: &Path,
+    allowed_files: &[String],
+) -> Result<(), StaticRuntimeError> {
     let mut buffer = [0_u8; 2048];
     let bytes = stream.read(&mut buffer)?;
     let request = String::from_utf8_lossy(&buffer[..bytes]);
@@ -279,7 +294,7 @@ fn handle_connection(mut stream: TcpStream, static_root: &Path) -> Result<(), St
         .and_then(|line| line.split_whitespace().nth(1))
         .unwrap_or("/");
 
-    let file_path = resolve_static_path(static_root, path)?;
+    let file_path = resolve_static_path(static_root, path, allowed_files)?;
     if file_path.is_file() {
         let body = fs::read(&file_path)?;
         let content_type = mime_guess::from_path(&file_path).first_or_octet_stream();
@@ -319,6 +334,7 @@ fn write_response(
 fn resolve_static_path(
     static_root: &Path,
     request_path: &str,
+    allowed_files: &[String],
 ) -> Result<PathBuf, StaticRuntimeError> {
     let path_without_query = request_path.split('?').next().unwrap_or("/");
     let relative = path_without_query.trim_start_matches('/');
@@ -338,9 +354,9 @@ fn resolve_static_path(
     }
 
     let relative_name = relative.to_string_lossy();
-    if !STATIC_HTML_ALLOWED_FILES
+    if !allowed_files
         .iter()
-        .any(|allowed| *allowed == relative_name)
+        .any(|allowed| allowed == relative_name.as_ref())
     {
         return Ok(static_root.join("__sofvary_not_found__"));
     }
@@ -462,32 +478,54 @@ fn validate_prompt_envelope(envelope: &PromptEnvelope) -> Result<(), StaticRunti
             envelope.output_contract.format
         )));
     }
-    ensure_exact_static_files(
-        "fileSystemPolicy.allowedFiles",
-        &envelope.file_system_policy.allowed_files,
-    )?;
-    ensure_exact_static_files("outputContract.files", &envelope.output_contract.files)?;
+    ensure_allowed_files_match_output_contract(envelope)?;
 
     Ok(())
 }
 
-fn ensure_exact_static_files(field: &str, files: &[String]) -> Result<(), StaticRuntimeError> {
-    let expected: HashSet<&str> = STATIC_HTML_ALLOWED_FILES.iter().copied().collect();
-    let actual: HashSet<&str> = files.iter().map(String::as_str).collect();
-    if expected == actual && files.len() == STATIC_HTML_ALLOWED_FILES.len() {
-        Ok(())
-    } else {
-        Err(StaticRuntimeError::InvalidPromptEnvelope(format!(
-            "{field} must contain exactly index.html, style.css, and app.js"
-        )))
+fn ensure_allowed_files_match_output_contract(
+    envelope: &PromptEnvelope,
+) -> Result<(), StaticRuntimeError> {
+    if envelope.file_system_policy.allowed_files.is_empty() {
+        return Err(StaticRuntimeError::InvalidPromptEnvelope(
+            "static-html output contract must declare at least one allowed file".to_string(),
+        ));
     }
+
+    for file in envelope
+        .file_system_policy
+        .allowed_files
+        .iter()
+        .chain(envelope.output_contract.files.iter())
+    {
+        validate_relative_contract_file(file)?;
+    }
+
+    let expected: HashSet<&str> = envelope
+        .file_system_policy
+        .allowed_files
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let actual: HashSet<&str> = envelope
+        .output_contract
+        .files
+        .iter()
+        .map(String::as_str)
+        .collect();
+    if expected == actual && expected.len() == envelope.output_contract.files.len() {
+        return Ok(());
+    }
+
+    Err(StaticRuntimeError::InvalidPromptEnvelope(
+        "fileSystemPolicy.allowedFiles and outputContract.files must match".to_string(),
+    ))
 }
 
 fn ensure_exact_workspace_static_files(
     manifest: &AppBoxManifest,
     allowed_files: &[String],
 ) -> Result<(), StaticRuntimeError> {
-    ensure_exact_static_files("workspace.generatedStatic", allowed_files)?;
     let static_root = prepare_static_root(manifest)?;
     let expected: HashSet<&str> = allowed_files.iter().map(String::as_str).collect();
     let mut actual = HashSet::new();
@@ -515,6 +553,57 @@ fn ensure_exact_workspace_static_files(
         ));
     }
 
+    Ok(())
+}
+
+fn list_relative_files(root: &Path) -> Result<Vec<String>, StaticRuntimeError> {
+    let mut files = HashSet::new();
+    if root.exists() {
+        collect_relative_files(root, root, &mut files)?;
+    }
+    let mut files = files.into_iter().collect::<Vec<_>>();
+    files.sort();
+    Ok(files)
+}
+
+fn collect_relative_files(
+    root: &Path,
+    current: &Path,
+    files: &mut HashSet<String>,
+) -> Result<(), StaticRuntimeError> {
+    for entry in fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            collect_relative_files(root, &path, files)?;
+        } else if entry.file_type()?.is_file() {
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| StaticRuntimeError::PathEscape)?;
+            files.insert(relative.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_relative_contract_file(path: &str) -> Result<(), StaticRuntimeError> {
+    if path.trim().is_empty()
+        || path.contains('\\')
+        || path.starts_with('/')
+        || path
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "..")
+        || Path::new(path).components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(StaticRuntimeError::InvalidPromptEnvelope(format!(
+            "output contract file path must stay relative inside generated/static: {path}"
+        )));
+    }
     Ok(())
 }
 
@@ -561,7 +650,7 @@ mod tests {
         let manifest = crate::core::workspace_types::AppBoxManifest {
             app_id: "app_test".to_string(),
             name: "Test".to_string(),
-            mode: crate::core::workspace_types::WorkspaceMode::StaticHtml,
+            mode: "static-html".to_string(),
             created_at: "now".to_string(),
             updated_at: "now".to_string(),
             stack: vec![],
@@ -623,7 +712,7 @@ mod tests {
         let manifest = crate::core::workspace_types::AppBoxManifest {
             app_id: "app_test".to_string(),
             name: "Test".to_string(),
-            mode: crate::core::workspace_types::WorkspaceMode::StaticHtml,
+            mode: "static-html".to_string(),
             created_at: "now".to_string(),
             updated_at: "now".to_string(),
             stack: vec![],
@@ -707,7 +796,8 @@ mod tests {
     #[test]
     fn rejects_static_path_escape() {
         let root = PathBuf::from("/tmp/sofvary/static");
-        let result = resolve_static_path(&root, "/../secret.txt");
+        let allowed_files = vec!["index.html".to_string()];
+        let result = resolve_static_path(&root, "/../secret.txt", &allowed_files);
         assert!(matches!(result, Err(StaticRuntimeError::PathEscape)));
     }
 
@@ -723,7 +813,8 @@ mod tests {
         std::os::unix::fs::symlink(outside.join("secret.txt"), static_root.join("index.html"))
             .expect("symlink");
 
-        let result = resolve_static_path(&static_root, "/index.html");
+        let allowed_files = vec!["index.html".to_string()];
+        let result = resolve_static_path(&static_root, "/index.html", &allowed_files);
 
         assert!(matches!(result, Err(StaticRuntimeError::PathEscape)));
     }
@@ -734,7 +825,7 @@ mod tests {
         let manifest = crate::core::workspace_types::AppBoxManifest {
             app_id: "app_test".to_string(),
             name: "Test".to_string(),
-            mode: crate::core::workspace_types::WorkspaceMode::StaticHtml,
+            mode: "static-html".to_string(),
             created_at: "now".to_string(),
             updated_at: "now".to_string(),
             stack: vec![],
@@ -805,7 +896,12 @@ mod tests {
             .generate_fake_static_app(&manifest, &test_envelope("HTTP test"))
             .expect("generate");
         fs::write(manifest.paths.generated_static.join("extra.html"), "extra").expect("extra");
-        let server = runtime.start_workspace(&manifest).expect("serve");
+        let server = runtime
+            .start_workspace_with_allowed_files(
+                &manifest,
+                test_envelope("HTTP test").output_contract.files,
+            )
+            .expect("serve");
         let preview = server.preview();
         let address = preview
             .preview_url
@@ -828,7 +924,7 @@ mod tests {
         let manifest = crate::core::workspace_types::AppBoxManifest {
             app_id: "app_test".to_string(),
             name: "Test".to_string(),
-            mode: crate::core::workspace_types::WorkspaceMode::StaticHtml,
+            mode: "static-html".to_string(),
             created_at: "now".to_string(),
             updated_at: "now".to_string(),
             stack: vec![],
@@ -918,7 +1014,7 @@ mod tests {
         AppBoxManifest {
             app_id: "app_test".to_string(),
             name: "Test".to_string(),
-            mode: crate::core::workspace_types::WorkspaceMode::StaticHtml,
+            mode: "static-html".to_string(),
             created_at: "now".to_string(),
             updated_at: "now".to_string(),
             stack: vec![],

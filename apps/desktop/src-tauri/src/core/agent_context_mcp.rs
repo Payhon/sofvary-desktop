@@ -163,7 +163,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let envelope = test_envelope();
         let diagnostic = crate::core::runtime_diagnostic::diagnostic_from_command_failure(
-            crate::core::workspace_types::RuntimeKind::ReactVite,
+            "react-vite".to_string(),
             "build",
             Some(1),
             "",

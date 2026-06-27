@@ -1,21 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RuntimeKind {
-    StaticHtml,
-    ReactVite,
-    ReactSqlite,
-    AiAgentApp,
-    Canvas2d,
-    MarkdownKnowledge,
-    DataTable,
-    FileProcessor,
-    DesktopWidget,
-}
-
-pub type WorkspaceMode = RuntimeKind;
+pub type RuntimeKind = String;
+pub type WorkspaceMode = String;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -71,11 +58,22 @@ pub struct AppBoxManifest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LockedPackSource {
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SofvaryLockfile {
     pub client_version: String,
     pub runtime_packs: std::collections::HashMap<String, String>,
     pub harness_packs: std::collections::HashMap<String, String>,
     pub plugin_packs: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub pack_sources: std::collections::HashMap<String, LockedPackSource>,
     pub agent_adapter: String,
 }
 

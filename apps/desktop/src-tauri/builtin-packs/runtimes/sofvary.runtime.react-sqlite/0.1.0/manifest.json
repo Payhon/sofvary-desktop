@@ -20,7 +20,10 @@
         "supported": true
       }
     },
-    "arch": ["x64", "arm64"]
+    "arch": [
+      "x64",
+      "arm64"
+    ]
   },
   "stack": {
     "frontend": "React",
@@ -39,7 +42,11 @@
   "commands": {
     "install": {
       "executable": "${sidecar:pnpm}",
-      "args": ["install", "--offline", "--ignore-scripts"],
+      "args": [
+        "install",
+        "--offline",
+        "--ignore-scripts"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "timeoutMs": 60000,
@@ -47,27 +54,92 @@
     },
     "api": {
       "executable": "${sidecar:pnpm}",
-      "args": ["exec", "tsx", "server/index.ts"],
+      "args": [
+        "exec",
+        "tsx",
+        "server/index.ts"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "killOnDrop": true
     },
     "dev": {
       "executable": "${sidecar:pnpm}",
-      "args": ["exec", "vite", "--host", "127.0.0.1", "--port", "${port}"],
+      "args": [
+        "exec",
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "${port}"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "killOnDrop": true
     },
     "build": {
       "executable": "${sidecar:pnpm}",
-      "args": ["run", "build"],
+      "args": [
+        "run",
+        "build"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "timeoutMs": 120000,
       "killOnDrop": true
     }
   },
-  "defaultHarness": ["sofvary.harness.react-sqlite"],
-  "integrity": {}
+  "defaultHarness": [
+    "sofvary.harness.react-sqlite"
+  ],
+  "integrity": {},
+  "executor": {
+    "kind": "react-sqlite",
+    "allowedTopLevelDirs": [
+      "react",
+      "data"
+    ],
+    "clearRoots": [
+      "generated/react",
+      "generated/data"
+    ],
+    "preserveFiles": [
+      "generated/data/app.sqlite"
+    ],
+    "contextRoot": "generated",
+    "requiredToolchains": [
+      "nodejs"
+    ]
+  },
+  "promptEnvelope": "prompt/envelope.json",
+  "selection": {
+    "softwareType": "Local Data App",
+    "reason": "The request needs records that can be created, edited, searched, and kept over time.",
+    "signals": [
+      "customer",
+      "crm",
+      "contact",
+      "order",
+      "status",
+      "follow-up",
+      "follow up",
+      "database",
+      "sqlite",
+      "persist",
+      "reminder",
+      "客户",
+      "联系人",
+      "订单",
+      "跟进",
+      "状态",
+      "提醒",
+      "长期保存",
+      "持久",
+      "数据库",
+      "增删改查"
+    ],
+    "weight": 5,
+    "priority": 80
+  },
+  "builtin": true
 }

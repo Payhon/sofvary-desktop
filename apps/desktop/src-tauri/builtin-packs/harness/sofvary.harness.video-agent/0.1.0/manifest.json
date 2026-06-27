@@ -20,31 +20,26 @@
         "supported": true
       }
     },
-    "arch": ["x64", "arm64"]
+    "arch": [
+      "x64",
+      "arm64"
+    ]
   },
   "runtime": "sofvary.runtime.ai-agent-app",
   "softwareSpecies": {
     "id": "video-agent",
     "name": "Video Agent",
     "description": "A provider-bound video generation app for scene briefs, render jobs, status, and artifacts.",
-    "runtimeKinds": ["ai-agent-app"],
-    "tags": ["agent", "video", "generation"]
-  },
-  "instructions": {
-    "system": [
-      "Generate an AI Agent App focused on video brief creation, generation jobs, status tracking, and artifact download.",
-      "Use only video-capable provider requirements through the Sofvary AI Gateway."
+    "runtimeKinds": [
+      "ai-agent-app"
     ],
-    "fileSystemPolicy": [
-      "Write provider requirement metadata only inside generated/ai.",
-      "Write React UI files only inside generated/react.",
-      "Store generated video references as workspace-local artifact metadata only."
-    ],
-    "outputRules": [
-      "Show provider binding status without displaying API keys or secure refs.",
-      "Send video generation requests only to the local Sofvary AI Gateway.",
-      "Do not embed provider credentials or remote provider URLs in generated source."
+    "tags": [
+      "agent",
+      "video",
+      "generation"
     ]
   },
-  "integrity": {}
+  "integrity": {},
+  "promptPolicy": "prompt/policy.json",
+  "builtin": true
 }

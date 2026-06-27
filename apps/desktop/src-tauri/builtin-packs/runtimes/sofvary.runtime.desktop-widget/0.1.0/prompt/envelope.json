@@ -1,0 +1,76 @@
+{
+  "outputFormat": "desktop-widget-project",
+  "allowedFiles": [
+    "widget/manifest.json",
+    "react/package.json",
+    "react/index.html",
+    "react/vite.config.ts",
+    "react/tsconfig.json",
+    "react/src/main.tsx",
+    "react/src/App.tsx",
+    "react/src/components/DesktopWidgetApp.tsx",
+    "react/src/styles/app.css"
+  ],
+  "fileSystemRoot": "generated",
+  "runtimePolicy": {
+    "packageInstall": false
+  },
+  "commandPolicy": {
+    "allowShell": false,
+    "allowPackageInstall": false,
+    "allowGlobalInstall": false,
+    "allowedCommands": []
+  },
+  "harnessPolicy": {
+    "systemInstructions": [
+      "Generate a compact React desktop widget app that runs inside the main Sofvary preview.",
+      "Do not create transparent windows, always-on-top windows, tray behavior, notifications, or system automation."
+    ],
+    "fileSystemRules": [
+      "Write React UI files only inside generated/react.",
+      "Write widget metadata only inside generated/widget.",
+      "Do not read or write paths outside the active Sofvary workspace.",
+      "Do not create files outside the Desktop Widget output contract."
+    ],
+    "outputRules": [
+      "Keep the widget layout compact.",
+      "Run inside the main Sofvary preview.",
+      "Avoid unauthorized system APIs.",
+      "Keep Sofvary shell UI out of generated app source.",
+      "The generated app must be exportable without Sofvary floating menu or build overlay UI."
+    ],
+    "blockedCapabilities": [
+      "always-on-top-window",
+      "notification-plugin",
+      "plugin-execution",
+      "remote-network",
+      "shell-command",
+      "sofvary-shell-ui",
+      "system-automation",
+      "transparent-window",
+      "tray-integration"
+    ]
+  },
+  "acceptanceCriteria": [
+    "Generated output contains exactly the Desktop Widget project file set.",
+    "Generated widget runs inside the main Sofvary preview.",
+    "Generated widget keeps a compact layout and avoids unauthorized system APIs.",
+    "Generated widget does not create transparent windows, always-on-top windows, tray behavior, notifications, system automation, or Sofvary shell UI.",
+    "Harness {{harness.id}}@{{harness.version}} constraints are represented in the prompt envelope.",
+    "Before writing UI text, choose a concise software name. Use '{{workspace.name}}' unless you can derive a better short domain name from the user intent.",
+    "Visible app title and browser title must use the concise software name, not the full user requirement.",
+    "Do not render PromptEnvelope text, runtime repair fallback text, diagnostic text, or Sofvary shell copy inside the generated app UI."
+  ],
+  "updateMode": {
+    "systemInstructions": [
+      "This is an update to an existing Sofvary app. Use currentAppState.fileContext as the existing implementation context before changing files.",
+      "Do not rebuild from zero, switch Runtime, change the output contract, or discard existing behavior unless userIntent explicitly asks for it."
+    ],
+    "outputRules": [
+      "For update mode, return the complete allowed file set after applying the requested change so the workspace remains runnable."
+    ],
+    "acceptanceCriteria": [
+      "Update mode preserves existing app behavior and applies the new request on top of currentAppState.fileContext."
+    ]
+  }
+}

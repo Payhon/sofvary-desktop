@@ -176,7 +176,7 @@ const runtimeCategoryDescriptions: Record<RuntimeCategory, string> = {
   desktop: "Widgets and desktop experiences",
 };
 
-const runtimeOptionIcons: Record<RuntimeChoice, string> = {
+const runtimeOptionIcons: Record<string, string> = {
   auto: "AI",
   "static-html": "HTML",
   "react-vite": "R",
@@ -213,6 +213,8 @@ function runtimeOptionLabel(kind: RuntimeChoice, t: DesktopTranslator): string {
       return t("runtime.option.fileProcessor");
     case "desktop-widget":
       return t("runtime.option.desktopWidget");
+    default:
+      return kind === "auto" ? t("composer.autoRuntime") : kind;
   }
 }
 
@@ -238,6 +240,8 @@ function runtimeOptionDetail(kind: RuntimeChoice, t: DesktopTranslator): string 
       return t("runtime.option.fileProcessorDetail");
     case "desktop-widget":
       return t("runtime.option.desktopWidgetDetail");
+    default:
+      return kind === "auto" ? t("composer.autoRuntimeDetail") : kind;
   }
 }
 

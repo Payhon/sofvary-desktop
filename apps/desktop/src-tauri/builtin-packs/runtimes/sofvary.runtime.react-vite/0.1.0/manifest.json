@@ -20,7 +20,10 @@
         "supported": true
       }
     },
-    "arch": ["x64", "arm64"]
+    "arch": [
+      "x64",
+      "arm64"
+    ]
   },
   "stack": {
     "frontend": "React",
@@ -39,7 +42,11 @@
   "commands": {
     "install": {
       "executable": "${sidecar:pnpm}",
-      "args": ["install", "--offline", "--ignore-scripts"],
+      "args": [
+        "install",
+        "--offline",
+        "--ignore-scripts"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "timeoutMs": 60000,
@@ -47,20 +54,67 @@
     },
     "dev": {
       "executable": "${sidecar:pnpm}",
-      "args": ["exec", "vite", "--host", "127.0.0.1", "--port", "${port}"],
+      "args": [
+        "exec",
+        "vite",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "${port}"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "killOnDrop": true
     },
     "build": {
       "executable": "${sidecar:pnpm}",
-      "args": ["run", "build"],
+      "args": [
+        "run",
+        "build"
+      ],
       "cwd": "generated/react",
       "allowedNetwork": false,
       "timeoutMs": 120000,
       "killOnDrop": true
     }
   },
-  "defaultHarness": ["sofvary.harness.react-vite"],
-  "integrity": {}
+  "defaultHarness": [
+    "sofvary.harness.react-vite"
+  ],
+  "integrity": {},
+  "executor": {
+    "kind": "react-vite",
+    "allowedTopLevelDirs": [
+      "react"
+    ],
+    "clearRoots": [
+      "generated/react"
+    ],
+    "contextRoot": "generated/react",
+    "requiredToolchains": [
+      "nodejs"
+    ]
+  },
+  "promptEnvelope": "prompt/envelope.json",
+  "selection": {
+    "softwareType": "Interactive App",
+    "reason": "The request asks for a richer interactive UI without a clear local database or file-processing need.",
+    "signals": [
+      "dashboard",
+      "kanban",
+      "task board",
+      "interactive",
+      "multi page",
+      "form",
+      "面板",
+      "看板",
+      "任务板",
+      "交互",
+      "多页面",
+      "表单"
+    ],
+    "weight": 3,
+    "priority": 40
+  },
+  "builtin": true
 }

@@ -92,13 +92,13 @@ test("runtime environment install key and status text are stable", () => {
   assert.equal(formatRuntimeEnvironmentStatus(installed), "Sofvary managed / Node v24.16.0 / pnpm 10.12.3");
 });
 
-test("runtime requirement check blocks node-backed runtimes until node and pnpm are ready", () => {
-  const issue = getRuntimeEnvironmentRequirementIssue("react-sqlite", [baseStatus]);
+test("runtime requirement check blocks catalog-declared node toolchains until node and pnpm are ready", () => {
+  const issue = getRuntimeEnvironmentRequirementIssue("react-sqlite", [baseStatus], ["nodejs"]);
 
-  assert.equal(runtimeRequiresNodeToolchain("react-sqlite"), true);
-  assert.equal(runtimeRequiresNodeToolchain("ai-agent-app"), true);
-  assert.equal(runtimeRequiresNodeToolchain("static-html"), false);
-  assert.equal(runtimeRequiresNodeToolchain("canvas2d"), false);
+  assert.equal(runtimeRequiresNodeToolchain("react-sqlite", ["nodejs"]), true);
+  assert.equal(runtimeRequiresNodeToolchain("custom-runtime", ["nodejs"]), true);
+  assert.equal(runtimeRequiresNodeToolchain("react-sqlite"), false);
+  assert.equal(runtimeRequiresNodeToolchain("static-html", []), false);
   assert.match(issue?.message ?? "", /requires the Sofvary-managed Node\.js Toolchain/);
   assert.match(issue?.message ?? "", /before previewing/);
   assert.match(issue?.message ?? "", /Node\.js/);
@@ -128,7 +128,7 @@ test("runtime requirement check passes installed node toolchain", () => {
     },
   };
 
-  assert.equal(getRuntimeEnvironmentRequirementIssue("react-vite", [installed]), null);
+  assert.equal(getRuntimeEnvironmentRequirementIssue("react-vite", [installed], ["nodejs"]), null);
 });
 
 test("runtime requirement check rejects external PATH tools for managed runtimes", () => {
@@ -154,7 +154,7 @@ test("runtime requirement check rejects external PATH tools for managed runtimes
     },
   };
 
-  const issue = getRuntimeEnvironmentRequirementIssue("react-sqlite", [installed]);
+  const issue = getRuntimeEnvironmentRequirementIssue("react-sqlite", [installed], ["nodejs"]);
 
   assert.match(issue?.message ?? "", /managed Node\.js sidecars/);
   assert.match(issue?.message ?? "", /external PATH tools are not enough/);
