@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -104,6 +104,9 @@ impl StdioJsonRpcProcess {
 
     pub fn recent_stderr(&mut self) -> PlatformResult<String> {
         self.drain_stderr()?;
+        if self.child.try_wait()?.is_some() {
+            self.drain_stderr_after_exit(Duration::from_millis(100))?;
+        }
         Ok(self.stderr_lines.join("\n"))
     }
 
@@ -114,6 +117,20 @@ impl StdioJsonRpcProcess {
     pub fn kill(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+
+    fn drain_stderr_after_exit(&mut self, timeout: Duration) -> PlatformResult<()> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.stderr_rx.recv_timeout(Duration::from_millis(10)) {
+                Ok(Ok(line)) => self.stderr_lines.push(line),
+                Ok(Err(error)) => return Err(PlatformError::Io(error)),
+                Err(mpsc::RecvTimeoutError::Timeout) if Instant::now() >= deadline => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        Ok(())
     }
 }
 
