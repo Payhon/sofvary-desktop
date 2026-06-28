@@ -393,7 +393,7 @@ mod tests {
 
     #[cfg(windows)]
     fn test_shell_stdin_args() -> Vec<String> {
-        vec!["/C".to_string(), "more".to_string()]
+        vec!["/C".to_string(), "set /p line=&echo %line%".to_string()]
     }
 
     #[cfg(windows)]
@@ -419,7 +419,10 @@ mod tests {
 
     #[cfg(unix)]
     fn test_shell_stdin_args() -> Vec<String> {
-        vec!["-c".to_string(), "cat".to_string()]
+        vec![
+            "-c".to_string(),
+            "IFS= read -r line; printf '%s\\n' \"$line\"".to_string(),
+        ]
     }
 
     #[cfg(unix)]

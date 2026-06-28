@@ -1162,7 +1162,14 @@ fn enforce_pi_stream_limits(
     started_at: Instant,
     streamed_chars: usize,
 ) -> Result<(), AgentGatewayError> {
-    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+    enforce_pi_stream_elapsed_limits(started_at.elapsed(), streamed_chars)
+}
+
+fn enforce_pi_stream_elapsed_limits(
+    elapsed: Duration,
+    streamed_chars: usize,
+) -> Result<(), AgentGatewayError> {
+    let elapsed_ms = elapsed.as_millis() as u64;
     if elapsed_ms > MAX_PI_MANAGED_STREAM_MS {
         return Err(AgentGatewayError::Adapter(format!(
             "Sofvary Agent exceeded managed session limit after {} minutes without completing. Cancel this run or switch to Workspace Handoff for long native agent sessions.",
@@ -1868,8 +1875,11 @@ mod tests {
 
     #[test]
     fn pi_stream_limits_fail_before_multi_hour_runs() {
-        let started = Instant::now() - Duration::from_millis(MAX_PI_MANAGED_STREAM_MS + 1);
-        let error = enforce_pi_stream_limits(started, 10).expect_err("limit should fail");
+        let error = enforce_pi_stream_elapsed_limits(
+            Duration::from_millis(MAX_PI_MANAGED_STREAM_MS + 1),
+            10,
+        )
+        .expect_err("limit should fail");
 
         assert!(error.to_string().contains("exceeded managed session limit"));
     }
