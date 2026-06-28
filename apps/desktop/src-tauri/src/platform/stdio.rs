@@ -205,6 +205,7 @@ fn spawn_stdin_writer(mut stdin: ChildStdin, stdin_text: String) {
     thread::spawn(move || {
         let _ = stdin.write_all(stdin_text.as_bytes());
         let _ = stdin.flush();
+        drop(stdin);
     });
 }
 
@@ -320,7 +321,7 @@ mod tests {
     #[test]
     fn stdio_line_process_can_write_stdin() {
         let spec = CommandSpec {
-            executable: test_shell_executable(),
+            executable: test_shell_stdin_executable(),
             args: test_shell_stdin_args(),
             cwd: std::env::current_dir().expect("cwd"),
             env: HashMap::new(),
@@ -387,13 +388,23 @@ mod tests {
     }
 
     #[cfg(windows)]
+    fn test_shell_stdin_executable() -> PathBuf {
+        PathBuf::from("powershell")
+    }
+
+    #[cfg(windows)]
     fn test_shell_args() -> Vec<String> {
         vec!["/C".to_string(), "echo out && echo err 1>&2".to_string()]
     }
 
     #[cfg(windows)]
     fn test_shell_stdin_args() -> Vec<String> {
-        vec!["/C".to_string(), "set /p line=&echo %line%".to_string()]
+        vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-Command".to_string(),
+            "$line = [Console]::In.ReadLine(); Write-Output $line".to_string(),
+        ]
     }
 
     #[cfg(windows)]
@@ -407,6 +418,11 @@ mod tests {
     #[cfg(unix)]
     fn test_shell_executable() -> PathBuf {
         PathBuf::from("sh")
+    }
+
+    #[cfg(unix)]
+    fn test_shell_stdin_executable() -> PathBuf {
+        test_shell_executable()
     }
 
     #[cfg(unix)]
