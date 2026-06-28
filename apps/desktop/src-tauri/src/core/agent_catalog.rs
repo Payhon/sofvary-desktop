@@ -55,6 +55,28 @@ fn discover_template(
     os: OsKind,
     arch: ArchKind,
 ) -> DiscoveredAgent {
+    if template.provider == AgentProvider::SofvaryPi {
+        return DiscoveredAgent {
+            config: AgentConfig {
+                id: template.id.to_string(),
+                provider: template.provider,
+                label: template.label.to_string(),
+                enabled: true,
+                acp: None,
+                cli: template
+                    .cli
+                    .as_ref()
+                    .and_then(|command| resolve_command(command, controlled_dir, dev_dir, os)),
+                allow_cli_fallback: false,
+                default_interaction_mode: None,
+                last_test: None,
+                pi_native_provider: None,
+            },
+            detected: true,
+            status: "Built into Sofvary".to_string(),
+        };
+    }
+
     let acp = template
         .acp
         .as_ref()
@@ -82,6 +104,7 @@ fn discover_template(
             allow_cli_fallback: template.allow_cli_fallback,
             default_interaction_mode: None,
             last_test: None,
+            pi_native_provider: None,
         },
         detected,
         status,
@@ -335,7 +358,7 @@ fn provider_templates() -> Vec<ProviderTemplate> {
         ProviderTemplate {
             id: "sofvary-pi",
             provider: AgentProvider::SofvaryPi,
-            label: "Sofvary Pi",
+            label: "Sofvary Agent",
             acp: None,
             cli: Some(CommandTemplate {
                 executables: &["pi"],
@@ -454,5 +477,22 @@ mod tests {
         let cli = codex.cli.expect("codex cli template");
 
         assert!(cli.args.contains(&"--skip-git-repo-check"));
+    }
+
+    #[test]
+    fn sofvary_pi_is_reported_as_builtin_without_external_command() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let template = provider_templates()
+            .into_iter()
+            .find(|template| template.id == "sofvary-pi")
+            .expect("sofvary pi template");
+
+        let discovered =
+            discover_template(template, temp.path(), None, OsKind::Macos, ArchKind::Arm64);
+
+        assert!(discovered.detected);
+        assert!(discovered.config.enabled);
+        assert!(discovered.config.cli.is_none());
+        assert_eq!(discovered.status, "Built into Sofvary");
     }
 }

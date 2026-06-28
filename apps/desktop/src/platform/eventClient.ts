@@ -5,10 +5,12 @@ export type ShellEventName =
   | "sofvary-build-state"
   | "sofvary-build-thread-updated"
   | "sofvary-build-thread-entry"
+  | "sofvary-build-thread-activity"
   | "sofvary-runtime-preview"
   | "sofvary-runtime-error"
   | "sofvary-agent-install-updated"
   | "sofvary-agent-install-log"
+  | "sofvary-agent-terminal-output"
   | "sofvary-runtime-environment-install-updated";
 
 export async function emitShellEvent<T>(eventName: ShellEventName, payload: T): Promise<void> {

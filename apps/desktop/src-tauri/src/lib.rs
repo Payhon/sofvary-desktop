@@ -7,6 +7,7 @@ use crate::core::agent_cli_bridge::test_cli_agent;
 use crate::core::agent_config::{
     fresh_test_record, AgentCommandConfig, AgentConfig, AgentConfigState, AgentConfigStore,
     AgentInteractionMode, AgentProvider, AgentTestRecord, AgentTransportKind,
+    PiNativeProviderConfig,
 };
 use crate::core::agent_gateway::{AgentEvent, AgentEventSink};
 use crate::core::agent_install::{
@@ -16,6 +17,7 @@ use crate::core::agent_install::{
     start_agent_install as start_agent_install_core, AgentInstallCatalogItem, AgentInstallStatus,
     StartAgentInstallPayload,
 };
+use crate::core::agent_terminal::{AgentTerminalManager, AgentTerminalStartSpec};
 use crate::core::app_capsule::{
     capsule_policy_request, export_app_capsule as export_capsule_core,
     import_app_capsule as import_capsule_core, inspect_app_capsule_bytes_with_adapter,
@@ -46,6 +48,7 @@ use crate::core::file_processor_runtime::{
     record_selected_files as record_file_processor_selected_files_log,
     FileProcessorDryRunOperation, FileProcessorSelectedFileMetadata,
 };
+use crate::core::gateway_event_buffer::{take_coalesced_metadata, GatewayUniEventBuffer};
 use crate::core::gateway_uni_event::{
     gateway_uni_event_summary, GatewayUniEvent, GatewayUniEventEmitter, GatewayUniEventSink,
     GatewayUniEventType,
@@ -64,7 +67,6 @@ use crate::core::packager_toolchain::{
     start_packager_toolchain_install as start_packager_toolchain_install_core,
     PackagerToolchainStatus, StartPackagerToolchainInstallPayload,
 };
-use crate::core::pi_agent::test_pi_agent;
 use crate::core::policy_engine::PolicyEngine;
 use crate::core::policy_types::{
     PolicyActionKind, PolicyAgentInstallRequest, PolicyApprovalSet, PolicyCapsuleImportRequest,
@@ -109,13 +111,12 @@ use crate::platform::host_shell::{
     tray_or_menu_bar_available, ShortcutKey, ShortcutModifier, WindowPosition, WindowSize,
     GLYPH_WINDOW,
 };
-use crate::platform::{
-    current_adapter, ArchKind, CommandSpec, OsKind, PlatformDirs, WebviewProfile,
-};
+use crate::platform::{current_adapter, ArchKind, OsKind, PlatformDirs, WebviewProfile};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::image::Image;
@@ -133,6 +134,7 @@ pub struct AppState {
     pack_manager: PackManager,
     agent_store: AgentConfigStore,
     build_thread_store: BuildThreadStore,
+    terminal_manager: AgentTerminalManager,
     llm_provider_store: LlmProviderConfigStore,
     last_shortcut_start_at: Mutex<Option<Instant>>,
     deep_link_install_lock: Mutex<()>,
@@ -146,6 +148,7 @@ impl Default for AppState {
             pack_manager: PackManager::new().expect("failed to initialize Sofvary pack manager"),
             agent_store: AgentConfigStore::new(),
             build_thread_store: BuildThreadStore::new(),
+            terminal_manager: AgentTerminalManager::new(),
             llm_provider_store: LlmProviderConfigStore::new(),
             last_shortcut_start_at: Mutex::new(None),
             deep_link_install_lock: Mutex::new(()),
@@ -192,6 +195,8 @@ struct RunGeneratedAppPayload {
     mode: Option<RuntimeMode>,
     agent_id: Option<String>,
     #[serde(default)]
+    llm_provider_id: Option<String>,
+    #[serde(default)]
     policy_approvals: PolicyApprovalSet,
 }
 
@@ -205,6 +210,8 @@ struct StartBuildThreadPayload {
     agent_id: Option<String>,
     #[serde(default)]
     agent_mode: Option<AgentInteractionMode>,
+    #[serde(default)]
+    llm_provider_id: Option<String>,
     #[serde(default)]
     policy_approvals: PolicyApprovalSet,
 }
@@ -237,6 +244,8 @@ struct HandoffPromptCopyResult {
 #[serde(rename_all = "camelCase")]
 struct HandoffActionResult {
     thread: BuildThreadSummary,
+    #[serde(default)]
+    terminal_session_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -513,8 +522,12 @@ async fn run_generated_app(
         let agent_config = agent_store
             .resolve_agent(payload.agent_id.as_deref())
             .map_err(|error| error.to_string())?;
-        let agent_config = hydrate_agent_config_for_runtime(agent_config, &llm_provider_store)
-            .map_err(|error| error.to_string())?;
+        let agent_config = hydrate_agent_config_for_runtime(
+            agent_config,
+            &llm_provider_store,
+            payload.llm_provider_id.as_deref(),
+        )
+        .map_err(|error| error.to_string())?;
         runtime_manager
             .build_and_preview_app_with_agent_policy(
                 payload.requirement,
@@ -545,8 +558,12 @@ fn start_build_thread(
         .agent_store
         .resolve_agent(payload.agent_id.as_deref())
         .map_err(|error| error.to_string())?;
-    let agent_config = hydrate_agent_config_for_runtime(agent_config, &state.llm_provider_store)
-        .map_err(|error| error.to_string())?;
+    let agent_config = hydrate_agent_config_for_runtime(
+        agent_config,
+        &state.llm_provider_store,
+        payload.llm_provider_id.as_deref(),
+    )
+    .map_err(|error| error.to_string())?;
     let agent_mode = resolve_agent_interaction_mode(payload.agent_mode, &agent_config);
     let mode = payload.mode.unwrap_or_default();
     let runtime_selection =
@@ -682,8 +699,9 @@ fn continue_build_thread(
         .agent_store
         .resolve_agent(Some(&detail.summary.agent_id))
         .map_err(|error| error.to_string())?;
-    let agent_config = hydrate_agent_config_for_runtime(agent_config, &state.llm_provider_store)
-        .map_err(|error| error.to_string())?;
+    let agent_config =
+        hydrate_agent_config_for_runtime(agent_config, &state.llm_provider_store, None)
+            .map_err(|error| error.to_string())?;
     let agent_mode = resolve_agent_interaction_mode(
         payload.agent_mode.or(Some(detail.summary.agent_mode)),
         &agent_config,
@@ -743,8 +761,7 @@ fn cancel_build_thread(
     state: tauri::State<'_, AppState>,
     thread_id: String,
 ) -> Result<BuildThreadSummary, String> {
-    // Phase 1 cancellation marks the task as canceled and prevents later preview handoff.
-    // Process-level Agent/runtime interruption is handled by the future BuildTaskRunner.
+    let _ = state.terminal_manager.stop_thread(&thread_id);
     let entry = state
         .build_thread_store
         .append_entry(
@@ -829,7 +846,10 @@ fn open_handoff_workspace(
     ) {
         emit_build_thread_entry(&app, &entry);
     }
-    Ok(HandoffActionResult { thread })
+    Ok(HandoffActionResult {
+        thread,
+        terminal_session_id: None,
+    })
 }
 
 #[tauri::command]
@@ -844,28 +864,9 @@ fn open_handoff_agent(
         .agent_store
         .resolve_agent(Some(&thread.agent_id))
         .map_err(|error| error.to_string())?;
-    let (transport, command) = if let Some(acp) = agent.acp.clone() {
-        ("acp", acp)
-    } else if agent.provider == AgentProvider::SofvaryPi {
-        let command = agent
-            .cli
-            .clone()
-            .ok_or_else(|| "selected Agent has no launch command".to_string())?;
-        ("pi-rpc", command)
-    } else if agent.allow_cli_fallback
-        && agent
-            .last_test
-            .as_ref()
-            .is_some_and(|record| record.ok && matches!(record.transport, AgentTransportKind::Cli))
-    {
-        let command = agent
-            .cli
-            .clone()
-            .ok_or_else(|| "selected Agent has no launch command".to_string())?;
-        ("cli", command)
-    } else {
-        return Err("selected Agent has no policy-approved launch command".to_string());
-    };
+    let command = terminal_command_for_agent(&agent)
+        .ok_or_else(|| "selected Agent has no interactive terminal command".to_string())?;
+    let transport = "terminal";
     let subject = format!(
         "{}:{}:{}",
         agent.id,
@@ -878,31 +879,102 @@ fn open_handoff_agent(
     {
         return Err("Policy approval required to open the Workspace Handoff Agent.".to_string());
     }
-    current_adapter()
-        .spawn_process(CommandSpec {
-            executable: command.executable.clone(),
-            args: command.args.clone(),
-            cwd: manifest.paths.root.clone(),
-            env: command.env.clone(),
-            allowed_network: false,
-            timeout_ms: None,
-            kill_on_drop: false,
-        })
+    let terminal_emitter = handoff_event_emitter_with_transport(
+        &app,
+        state.build_thread_store,
+        &thread_id,
+        &agent.id,
+        AgentTransportKind::Terminal,
+    );
+    let app_for_terminal = app.clone();
+    let gateway_terminal_chars = Arc::new(AtomicUsize::new(0));
+    let gateway_terminal_capped = Arc::new(AtomicBool::new(false));
+    let terminal = state
+        .terminal_manager
+        .start(
+            AgentTerminalStartSpec {
+                thread_id: thread_id.clone(),
+                agent_id: agent.id.clone(),
+                command: command.clone(),
+                cwd: manifest.paths.root.clone(),
+                rows: 32,
+                cols: 120,
+            },
+            move |event| {
+                let text = event.text.clone();
+                let _ = app_for_terminal.emit("sofvary-agent-terminal-output", &event);
+                let previous_chars =
+                    gateway_terminal_chars.fetch_add(text.chars().count(), Ordering::Relaxed);
+                if previous_chars < 12_000 {
+                    let remaining = 12_000usize.saturating_sub(previous_chars);
+                    let summary = text.chars().take(remaining).collect::<String>();
+                    if !summary.is_empty() {
+                        terminal_emitter.terminal_output("pty", summary);
+                    }
+                } else if !gateway_terminal_capped.swap(true, Ordering::Relaxed) {
+                    terminal_emitter.status(
+                        "terminal-live-only",
+                        "Terminal output continues in the live terminal panel.",
+                    );
+                }
+            },
+        )
         .map_err(|error| error.to_string())?;
+    let terminal_session_id = terminal.session_id.clone();
     if let Ok(entry) = state.build_thread_store.append_entry(
         &thread_id,
         BuildThreadEntryKind::System,
-        format!("Workspace Handoff Agent launched: {}", agent.label),
+        format!("Workspace Handoff terminal launched: {}", agent.label),
         serde_json::json!({
             "kind": "workspace-handoff-agent-opened",
             "agentId": agent.id,
             "transport": transport,
             "workspaceRoot": manifest.paths.root,
+            "terminalSessionId": terminal_session_id,
         }),
     ) {
         emit_build_thread_entry(&app, &entry);
     }
-    Ok(HandoffActionResult { thread })
+    Ok(HandoffActionResult {
+        thread,
+        terminal_session_id: Some(terminal_session_id),
+    })
+}
+
+#[tauri::command]
+fn write_agent_terminal(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
+    state
+        .terminal_manager
+        .write(&session_id, &data)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn resize_agent_terminal(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
+    state
+        .terminal_manager
+        .resize(&session_id, rows, cols)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn stop_agent_terminal(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    state
+        .terminal_manager
+        .stop(&session_id)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -964,7 +1036,7 @@ fn run_build_thread_task(
     runtime_mode: RuntimeMode,
     policy_approvals: PolicyApprovalSet,
     agent_config: AgentConfig,
-    agent_mode: AgentInteractionMode,
+    mut agent_mode: AgentInteractionMode,
     run_context: BuildThreadRunContext,
 ) {
     if build_thread_is_canceled(&build_thread_store, &thread_id) {
@@ -972,7 +1044,25 @@ fn run_build_thread_task(
         return;
     }
 
-    if agent_mode == AgentInteractionMode::WorkspaceHandoff {
+    if agent_config.provider == AgentProvider::SofvaryPi {
+        agent_mode = AgentInteractionMode::PiNative;
+        if let Some(summary) = update_build_thread_unless_canceled(
+            &app,
+            &build_thread_store,
+            &thread_id,
+            BuildThreadUpdate {
+                agent_mode: Some(agent_mode),
+                ..BuildThreadUpdate::default()
+            },
+        ) {
+            emit_build_thread_updated(&app, &summary);
+        }
+    }
+
+    if matches!(
+        agent_mode,
+        AgentInteractionMode::WorkspaceHandoff | AgentInteractionMode::ThirdPartyTerminal
+    ) {
         run_workspace_handoff_build_thread_task(
             app,
             build_thread_store,
@@ -1068,15 +1158,21 @@ fn run_build_thread_task(
             append_live_agent_event(&app, &build_thread_store, &thread_id, event);
         })
     };
+    let gateway_event_buffer = Arc::new(Mutex::new(GatewayUniEventBuffer::new()));
     let gateway_event_sink: GatewayUniEventSink = {
         let app = app.clone();
         let build_thread_store = build_thread_store;
         let thread_id = thread_id.clone();
+        let gateway_event_buffer = gateway_event_buffer.clone();
         Arc::new(move |event| {
             if build_thread_is_canceled(&build_thread_store, &thread_id) {
                 return;
             }
-            append_gateway_uni_event(&app, &build_thread_store, &thread_id, event);
+            let events = match gateway_event_buffer.lock() {
+                Ok(mut buffer) => buffer.push(event),
+                Err(_) => vec![event],
+            };
+            append_gateway_uni_events(&app, &build_thread_store, &thread_id, events);
         })
     };
     let live_agent_event_sink = if agent_config.provider == AgentProvider::SofvaryPi {
@@ -1112,6 +1208,8 @@ fn run_build_thread_task(
                 Some(gateway_event_sink),
             ),
     };
+
+    flush_gateway_uni_event_buffer(&app, &build_thread_store, &thread_id, &gateway_event_buffer);
 
     match build_result {
         Ok(preview) => {
@@ -1344,6 +1442,22 @@ fn handoff_event_emitter(
     thread_id: &str,
     agent_id: &str,
 ) -> GatewayUniEventEmitter {
+    handoff_event_emitter_with_transport(
+        app,
+        build_thread_store,
+        thread_id,
+        agent_id,
+        AgentTransportKind::WorkspaceHandoff,
+    )
+}
+
+fn handoff_event_emitter_with_transport(
+    app: &tauri::AppHandle,
+    build_thread_store: BuildThreadStore,
+    thread_id: &str,
+    agent_id: &str,
+    transport: AgentTransportKind,
+) -> GatewayUniEventEmitter {
     let app = app.clone();
     let thread_id_for_sink = thread_id.to_string();
     let sink: GatewayUniEventSink = Arc::new(move |event| {
@@ -1352,12 +1466,7 @@ fn handoff_event_emitter(
         }
         append_gateway_uni_event(&app, &build_thread_store, &thread_id_for_sink, event);
     });
-    GatewayUniEventEmitter::new(
-        thread_id.to_string(),
-        agent_id.to_string(),
-        AgentTransportKind::WorkspaceHandoff,
-        sink,
-    )
+    GatewayUniEventEmitter::new(thread_id.to_string(), agent_id.to_string(), transport, sink)
 }
 
 fn append_handoff_prepared_entry(
@@ -1638,12 +1747,23 @@ fn resolve_agent_interaction_mode(
     let mode = requested.unwrap_or_else(|| agent_config.effective_interaction_mode());
     match (agent_config.provider, mode) {
         (AgentProvider::SofvaryPi, AgentInteractionMode::ThirdPartyManaged)
+        | (AgentProvider::SofvaryPi, AgentInteractionMode::ThirdPartyTerminal)
         | (AgentProvider::SofvaryPi, AgentInteractionMode::WorkspaceHandoff) => {
             AgentInteractionMode::PiNative
         }
-        (_, AgentInteractionMode::PiNative) => AgentInteractionMode::ThirdPartyManaged,
+        (_, AgentInteractionMode::PiNative) | (_, AgentInteractionMode::ThirdPartyManaged) => {
+            AgentInteractionMode::ThirdPartyTerminal
+        }
         _ => mode,
     }
+}
+
+fn terminal_command_for_agent(agent_config: &AgentConfig) -> Option<AgentCommandConfig> {
+    let mut command = agent_config.cli.clone()?;
+    if agent_config.provider != AgentProvider::Custom {
+        command.args.clear();
+    }
+    Some(command)
 }
 
 fn handoff_thread_manifest(
@@ -1655,8 +1775,11 @@ fn handoff_thread_manifest(
         .get(thread_id)
         .map_err(|error| error.to_string())?
         .summary;
-    if thread.agent_mode != AgentInteractionMode::WorkspaceHandoff {
-        return Err("build thread is not a Workspace Handoff thread".to_string());
+    if !matches!(
+        thread.agent_mode,
+        AgentInteractionMode::WorkspaceHandoff | AgentInteractionMode::ThirdPartyTerminal
+    ) {
+        return Err("build thread is not a Handoff thread".to_string());
     }
     let app_id = thread
         .app_id
@@ -1768,7 +1891,49 @@ fn append_gateway_uni_event(
     thread_id: &str,
     event: GatewayUniEvent,
 ) {
-    let kind = match event.event_type {
+    append_gateway_uni_events(app, build_thread_store, thread_id, vec![event]);
+}
+
+fn append_gateway_uni_events(
+    app: &tauri::AppHandle,
+    build_thread_store: &BuildThreadStore,
+    thread_id: &str,
+    events: Vec<GatewayUniEvent>,
+) {
+    if events.is_empty() {
+        return;
+    }
+
+    let mut latest_activity: Option<(GatewayUniEvent, String)> = None;
+    let drafts = events
+        .into_iter()
+        .filter_map(|event| {
+            let kind = gateway_uni_event_entry_kind(&event);
+            let content = gateway_uni_event_summary(&event);
+            if content.trim().is_empty() {
+                return None;
+            }
+            latest_activity = Some((event.clone(), content.clone()));
+            Some((kind, content, gateway_uni_event_entry_metadata(event)))
+        })
+        .collect::<Vec<_>>();
+
+    if drafts.is_empty() {
+        return;
+    }
+
+    if let Ok(entries) = build_thread_store.append_entries(thread_id, drafts) {
+        for entry in &entries {
+            emit_build_thread_entry(app, entry);
+        }
+        if let Some((event, summary)) = latest_activity {
+            emit_build_thread_activity(app, &event, &summary);
+        }
+    }
+}
+
+fn gateway_uni_event_entry_kind(event: &GatewayUniEvent) -> BuildThreadEntryKind {
+    match event.event_type {
         GatewayUniEventType::MessageDelta => BuildThreadEntryKind::Assistant,
         GatewayUniEventType::ToolStarted
         | GatewayUniEventType::ToolDelta
@@ -1785,19 +1950,115 @@ fn append_gateway_uni_event(
         | GatewayUniEventType::ReasoningDelta
         | GatewayUniEventType::StatusChanged
         | GatewayUniEventType::TurnCompleted => BuildThreadEntryKind::AgentEvent,
-    };
-    let content = gateway_uni_event_summary(&event);
-    if content.trim().is_empty() {
-        return;
     }
-    if let Ok(entry) = build_thread_store.append_entry(
-        thread_id,
-        kind,
-        content,
-        serde_json::json!({ "source": "gateway-uni-event", "gatewayUniEvent": event }),
-    ) {
-        emit_build_thread_entry(app, &entry);
+}
+
+fn gateway_uni_event_entry_metadata(mut event: GatewayUniEvent) -> serde_json::Value {
+    let (coalesced_count, first_sequence, last_sequence) = take_coalesced_metadata(&mut event);
+    let mut metadata =
+        serde_json::json!({ "source": "gateway-uni-event", "gatewayUniEvent": event });
+    if let Some(object) = metadata.as_object_mut() {
+        if let Some(coalesced_count) = coalesced_count.filter(|count| *count > 1) {
+            object.insert(
+                "coalescedCount".to_string(),
+                serde_json::Value::from(coalesced_count),
+            );
+        }
+        if let Some(first_sequence) = first_sequence {
+            object.insert(
+                "firstSequence".to_string(),
+                serde_json::Value::from(first_sequence),
+            );
+        }
+        if let Some(last_sequence) = last_sequence {
+            object.insert(
+                "lastSequence".to_string(),
+                serde_json::Value::from(last_sequence),
+            );
+        }
     }
+    metadata
+}
+
+fn flush_gateway_uni_event_buffer(
+    app: &tauri::AppHandle,
+    build_thread_store: &BuildThreadStore,
+    thread_id: &str,
+    buffer: &Arc<Mutex<GatewayUniEventBuffer>>,
+) {
+    let events = buffer
+        .lock()
+        .map(|mut buffer| buffer.flush())
+        .unwrap_or_default();
+    append_gateway_uni_events(app, build_thread_store, thread_id, events);
+}
+
+fn emit_build_thread_activity(app: &tauri::AppHandle, event: &GatewayUniEvent, summary: &str) {
+    let (phase, latest_warning, latest_error) = gateway_activity_phase(event, summary);
+    let event_type = serde_json::to_value(event.event_type)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "status.changed".to_string());
+    let coalesced_count = event
+        .payload
+        .get("_sofvaryCoalescedCount")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(1);
+    let _ = app.emit(
+        "sofvary-build-thread-activity",
+        serde_json::json!({
+            "threadId": event.thread_id,
+            "timestamp": event.timestamp,
+            "agentId": event.agent_id,
+            "transport": event.transport,
+            "eventType": event_type,
+            "phase": phase,
+            "safeSummary": summarize_gateway_activity(summary, 180),
+            "counts": {
+                "coalesced": coalesced_count,
+                "sequence": event.sequence
+            },
+            "latestWarning": latest_warning,
+            "latestError": latest_error
+        }),
+    );
+}
+
+fn gateway_activity_phase(
+    event: &GatewayUniEvent,
+    summary: &str,
+) -> (&'static str, Option<String>, Option<String>) {
+    match event.event_type {
+        GatewayUniEventType::MessageDelta => ("agent-output", None, None),
+        GatewayUniEventType::ReasoningDelta => ("reasoning", None, None),
+        GatewayUniEventType::ToolStarted
+        | GatewayUniEventType::ToolDelta
+        | GatewayUniEventType::ToolCompleted => ("tool", None, None),
+        GatewayUniEventType::TerminalOutput => ("terminal", None, None),
+        GatewayUniEventType::FileWriteRequested | GatewayUniEventType::FileWritten => {
+            ("files", None, None)
+        }
+        GatewayUniEventType::ApprovalRequested | GatewayUniEventType::ApprovalResolved => {
+            ("approval", Some(summary.to_string()), None)
+        }
+        GatewayUniEventType::Error => ("error", None, Some(summary.to_string())),
+        GatewayUniEventType::TurnCompleted => ("completed", None, None),
+        GatewayUniEventType::SessionStarted
+        | GatewayUniEventType::TurnStarted
+        | GatewayUniEventType::StatusChanged => ("status", None, None),
+    }
+}
+
+fn summarize_gateway_activity(value: &str, max_chars: usize) -> String {
+    let mut output = String::new();
+    for (index, ch) in value.chars().enumerate() {
+        if index >= max_chars {
+            output.push_str("...");
+            return output;
+        }
+        output.push(ch);
+    }
+    output
 }
 
 fn append_preview_logs(
@@ -1915,13 +2176,38 @@ fn emit_runtime_environment_install_updated(app: &tauri::AppHandle, payload: ser
 fn hydrate_agent_config_for_runtime(
     mut config: AgentConfig,
     llm_provider_store: &LlmProviderConfigStore,
+    llm_provider_id: Option<&str>,
 ) -> Result<AgentConfig, crate::core::llm_provider_config::LlmProviderConfigError> {
-    let Some(provider) = llm_provider_store.resolve_default()? else {
+    let provider = match llm_provider_id {
+        Some(provider_id) => Some(llm_provider_store.resolve_enabled(provider_id)?),
+        None => llm_provider_store.resolve_default()?,
+    };
+    let Some(provider) = provider else {
+        if config.provider == AgentProvider::SofvaryPi {
+            return Err(LlmProviderConfigError::Invalid(
+                "Sofvary Agent requires a configured LLM Provider before creating software."
+                    .to_string(),
+            ));
+        }
         return Ok(config);
     };
 
     match config.provider {
         AgentProvider::SofvaryPi => {
+            if llm_provider_requires_api_key(provider.kind)
+                && resolve_llm_api_key(&provider)?.is_none()
+            {
+                return Err(LlmProviderConfigError::Invalid(format!(
+                    "LLM Provider {} requires an API key before Sofvary Agent can create software.",
+                    provider.label
+                )));
+            }
+            config.pi_native_provider = Some(PiNativeProviderConfig {
+                provider: provider.kind.as_pi_provider().to_string(),
+                model: provider.model.clone(),
+                base_url: provider.base_url.clone(),
+                api_key: resolve_llm_api_key(&provider)?,
+            });
             if let Some(command) = &mut config.cli {
                 command.args.push("--provider".to_string());
                 command
@@ -2488,6 +2774,18 @@ fn preview_policy(
                 .agent_store
                 .resolve_agent(payload.agent_id.as_deref())
                 .map_err(|error| error.to_string())?;
+            if agent_config.provider != AgentProvider::SofvaryPi {
+                if let Some(command) = terminal_command_for_agent(&agent_config) {
+                    decisions.push(engine.evaluate_external_agent_process(
+                        PolicyExternalAgentProcessRequest {
+                            agent_id: agent_config.id.clone(),
+                            provider: agent_config.provider.as_str().to_string(),
+                            transport: "terminal".to_string(),
+                            executable: command.executable.display().to_string(),
+                        },
+                    ));
+                }
+            }
             if let Some(acp) = &agent_config.acp {
                 decisions.push(engine.evaluate_external_agent_process(
                     PolicyExternalAgentProcessRequest {
@@ -2497,18 +2795,6 @@ fn preview_policy(
                         executable: acp.executable.display().to_string(),
                     },
                 ));
-            }
-            if agent_config.provider == AgentProvider::SofvaryPi {
-                if let Some(command) = &agent_config.cli {
-                    decisions.push(engine.evaluate_external_agent_process(
-                        PolicyExternalAgentProcessRequest {
-                            agent_id: agent_config.id.clone(),
-                            provider: agent_config.provider.as_str().to_string(),
-                            transport: "pi-rpc".to_string(),
-                            executable: command.executable.display().to_string(),
-                        },
-                    ));
-                }
             }
             if agent_config.allow_cli_fallback
                 && agent_config.last_test.as_ref().is_some_and(|record| {
@@ -2684,20 +2970,11 @@ fn test_configured_agent(
     config: &AgentConfig,
 ) -> Result<AgentTestRecord, (AgentTransportKind, String)> {
     if config.provider == AgentProvider::SofvaryPi {
-        return config
-            .cli
-            .as_ref()
-            .ok_or_else(|| {
-                (
-                    AgentTransportKind::PiRpc,
-                    "Sofvary Pi has no RPC command configured.".to_string(),
-                )
-            })
-            .and_then(|command| {
-                test_pi_agent(command)
-                    .map(|detail| fresh_test_record(true, AgentTransportKind::PiRpc, detail))
-                    .map_err(|error| (AgentTransportKind::PiRpc, error.to_string()))
-            });
+        return Ok(fresh_test_record(
+            true,
+            AgentTransportKind::PiNative,
+            "Built-in Sofvary Agent is available. Configure an LLM Provider before running it.",
+        ));
     }
 
     if let Some(acp) = &config.acp {
@@ -2983,11 +3260,16 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .setup(|app| {
+            ensure_configured_shell_windows(app)?;
             if !shell_integration_disabled() {
                 setup_tray(app)?;
                 setup_global_shortcuts(app)?;
             }
             setup_protocol_handler()?;
+            if show_command_window_on_start() {
+                show_command_window_for_app(app.handle())
+                    .map_err(|error| format!("failed to show Sofvary command window: {error}"))?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -3023,6 +3305,9 @@ pub fn run() {
             copy_handoff_prompt,
             open_handoff_workspace,
             open_handoff_agent,
+            write_agent_terminal,
+            resize_agent_terminal,
+            stop_agent_terminal,
             rescan_handoff_workspace,
             copy_handoff_repair_prompt,
             discover_agents,
@@ -3076,8 +3361,38 @@ pub fn run() {
 
 type SetupResult = Result<(), Box<dyn std::error::Error>>;
 
+fn ensure_configured_shell_windows(app: &mut tauri::App) -> SetupResult {
+    let app_handle = app.handle().clone();
+    for label in ["main", "command", "glyph"] {
+        if app_handle.get_webview_window(label).is_some() {
+            continue;
+        }
+
+        let config = app_handle
+            .config()
+            .app
+            .windows
+            .iter()
+            .find(|window| window.label == label)
+            .cloned()
+            .ok_or_else(|| format!("missing Sofvary window config for '{label}'"))?;
+        tauri::WebviewWindowBuilder::from_config(&app_handle, &config)?.build()?;
+    }
+
+    show_main_window_for_app(&app_handle)
+        .map_err(|error| format!("failed to show Sofvary main window: {error}"))?;
+
+    Ok(())
+}
+
 fn shell_integration_disabled() -> bool {
     env::var("SOFVARY_SAFE_SHELL")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
+fn show_command_window_on_start() -> bool {
+    env::var("SOFVARY_SHOW_COMMAND_ON_START")
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false)
 }
@@ -3252,6 +3567,66 @@ mod tests {
     }
 
     #[test]
+    fn resolves_builtin_agent_to_pi_native_mode() {
+        let builtin_agent = AgentConfig {
+            id: "sofvary-agent".to_string(),
+            provider: AgentProvider::SofvaryPi,
+            label: "Sofvary Agent".to_string(),
+            enabled: true,
+            acp: None,
+            cli: None,
+            allow_cli_fallback: false,
+            default_interaction_mode: Some(AgentInteractionMode::ThirdPartyTerminal),
+            last_test: None,
+            pi_native_provider: None,
+        };
+
+        assert_eq!(
+            resolve_agent_interaction_mode(
+                Some(AgentInteractionMode::ThirdPartyTerminal),
+                &builtin_agent,
+            ),
+            AgentInteractionMode::PiNative
+        );
+        assert_eq!(
+            resolve_agent_interaction_mode(
+                Some(AgentInteractionMode::WorkspaceHandoff),
+                &builtin_agent
+            ),
+            AgentInteractionMode::PiNative
+        );
+        assert_eq!(
+            resolve_agent_interaction_mode(None, &builtin_agent),
+            AgentInteractionMode::PiNative
+        );
+    }
+
+    #[test]
+    fn resolves_external_agent_away_from_pi_native_mode() {
+        let external_agent = AgentConfig {
+            id: "codex".to_string(),
+            provider: AgentProvider::Codex,
+            label: "Codex".to_string(),
+            enabled: true,
+            acp: None,
+            cli: None,
+            allow_cli_fallback: false,
+            default_interaction_mode: Some(AgentInteractionMode::PiNative),
+            last_test: None,
+            pi_native_provider: None,
+        };
+
+        assert_eq!(
+            resolve_agent_interaction_mode(Some(AgentInteractionMode::PiNative), &external_agent),
+            AgentInteractionMode::ThirdPartyTerminal
+        );
+        assert_eq!(
+            resolve_agent_interaction_mode(None, &external_agent),
+            AgentInteractionMode::ThirdPartyTerminal
+        );
+    }
+
+    #[test]
     fn llm_provider_test_fails_when_required_key_is_missing() {
         let provider = llm_provider_for_test(LlmProviderKind::KimiCoding);
         let (ok, detail) = llm_provider_test_outcome(&provider, false);
@@ -3277,6 +3652,64 @@ mod tests {
 
             assert!(ok);
             assert!(detail.contains("API key is optional"));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a real Kimi Coding API key and performs a live built-in Agent build"]
+    fn kimi_builtin_agent_static_html_smoke_build() {
+        if env::var("SOFVARY_KIMI_PI_SMOKE").ok().as_deref() != Some("1") {
+            return;
+        }
+
+        let api_key = env::var("KIMI_API_KEY").expect("KIMI_API_KEY is required for smoke test");
+        let agent_config = AgentConfig {
+            id: "sofvary-pi".to_string(),
+            provider: AgentProvider::SofvaryPi,
+            label: "Sofvary Agent".to_string(),
+            enabled: true,
+            acp: None,
+            cli: None,
+            allow_cli_fallback: false,
+            default_interaction_mode: Some(AgentInteractionMode::PiNative),
+            last_test: None,
+            pi_native_provider: Some(PiNativeProviderConfig {
+                provider: "kimi-coding".to_string(),
+                model: "kimi-for-coding".to_string(),
+                base_url: Some("https://api.kimi.com/coding/v1".to_string()),
+                api_key: Some(api_key),
+            }),
+        };
+        let runtime_manager = RuntimeManager::new();
+        let workspace_manager = WorkspaceManager::new();
+
+        let preview = runtime_manager
+            .build_and_preview_app_with_agent_policy_and_events(
+                "生成一个静态 HTML 本地番茄钟，包含开始、暂停、重置和本地保存设置".to_string(),
+                "static-html".to_string(),
+                RuntimeMode::Dev,
+                &workspace_manager,
+                &PolicyApprovalSet::default(),
+                &agent_config,
+                None,
+                Some("kimi-pi-native-smoke".to_string()),
+                None,
+            )
+            .expect("Kimi built-in Agent smoke build should create a preview");
+
+        assert_eq!(preview.runtime_kind, "static-html");
+        assert_eq!(preview.runtime_mode, RuntimeMode::Dev);
+        assert!(preview.preview_url.starts_with("http://127.0.0.1:"));
+        for file_name in ["index.html", "style.css", "app.js"] {
+            assert!(
+                preview
+                    .manifest
+                    .paths
+                    .generated_static
+                    .join(file_name)
+                    .exists(),
+                "expected generated static file {file_name}"
+            );
         }
     }
 

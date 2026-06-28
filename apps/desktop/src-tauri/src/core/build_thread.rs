@@ -112,6 +112,7 @@ pub struct CreateBuildThreadRequest {
 pub struct BuildThreadUpdate {
     pub title: Option<String>,
     pub status: Option<BuildThreadStatus>,
+    pub agent_mode: Option<AgentInteractionMode>,
     pub workspace_id: Option<Option<String>>,
     pub app_id: Option<Option<String>>,
     pub preview: Option<Option<RuntimePreview>>,
@@ -242,12 +243,40 @@ impl BuildThreadStore {
         content: impl Into<String>,
         metadata: Value,
     ) -> BuildThreadResult<BuildThreadEntry> {
-        let mut detail = self.get(thread_id)?;
-        let entry = self.entry(thread_id, kind, content, metadata);
-        detail.summary.updated_at = entry.timestamp.clone();
-        detail.entries.push(entry.clone());
-        self.save(&detail)?;
-        Ok(entry)
+        let mut entries = self.append_entries(thread_id, vec![(kind, content.into(), metadata)])?;
+        entries
+            .pop()
+            .ok_or_else(|| BuildThreadError::Invalid("entry was not appended".to_string()))
+    }
+
+    pub fn append_entries(
+        &self,
+        thread_id: &str,
+        drafts: Vec<(BuildThreadEntryKind, String, Value)>,
+    ) -> BuildThreadResult<Vec<BuildThreadEntry>> {
+        let adapter = current_adapter();
+        self.append_entries_with_adapter(adapter.as_ref(), thread_id, drafts)
+    }
+
+    pub fn append_entries_with_adapter(
+        &self,
+        adapter: &dyn PlatformAdapter,
+        thread_id: &str,
+        drafts: Vec<(BuildThreadEntryKind, String, Value)>,
+    ) -> BuildThreadResult<Vec<BuildThreadEntry>> {
+        if drafts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut detail = self.get_with_adapter(adapter, thread_id)?;
+        let mut entries = Vec::with_capacity(drafts.len());
+        for (kind, content, metadata) in drafts {
+            let entry = self.entry(thread_id, kind, content, metadata);
+            detail.summary.updated_at = entry.timestamp.clone();
+            detail.entries.push(entry.clone());
+            entries.push(entry);
+        }
+        self.save_with_adapter(adapter, &detail)?;
+        Ok(entries)
     }
 
     pub fn update(
@@ -282,6 +311,9 @@ impl BuildThreadStore {
                 ));
             }
             detail.summary.status = status;
+        }
+        if let Some(agent_mode) = update.agent_mode {
+            detail.summary.agent_mode = agent_mode;
         }
         if let Some(workspace_id) = update.workspace_id {
             detail.summary.workspace_id = workspace_id;
@@ -469,6 +501,56 @@ mod tests {
             .get_with_adapter(&adapter, &thread.summary.id)
             .expect("detail");
         assert_eq!(detail.entries.len(), 1);
+    }
+
+    #[test]
+    fn appends_multiple_entries_with_one_detail_update() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let adapter = TempAdapter {
+            data_dir: temp.path().join("data"),
+        };
+        let store = BuildThreadStore::new();
+        let thread = store
+            .create_with_adapter(
+                &adapter,
+                CreateBuildThreadRequest {
+                    title: "Initial".to_string(),
+                    prompt: "prompt".to_string(),
+                    runtime_kind: "static-html".to_string(),
+                    runtime_mode: RuntimeMode::Dev,
+                    agent_id: "agent".to_string(),
+                    agent_mode: AgentInteractionMode::PiNative,
+                },
+            )
+            .expect("thread");
+
+        let entries = store
+            .append_entries_with_adapter(
+                &adapter,
+                &thread.summary.id,
+                vec![
+                    (
+                        BuildThreadEntryKind::Assistant,
+                        "hello".to_string(),
+                        serde_json::json!({ "n": 1 }),
+                    ),
+                    (
+                        BuildThreadEntryKind::Tool,
+                        "tool completed".to_string(),
+                        serde_json::json!({ "n": 2 }),
+                    ),
+                ],
+            )
+            .expect("append");
+
+        assert_eq!(entries.len(), 2);
+        let detail = store
+            .get_with_adapter(&adapter, &thread.summary.id)
+            .expect("detail");
+        assert_eq!(detail.entries.len(), 3);
+        assert_eq!(detail.entries[1].content, "hello");
+        assert_eq!(detail.entries[2].content, "tool completed");
+        assert_eq!(detail.summary.updated_at, detail.entries[2].timestamp);
     }
 
     #[test]

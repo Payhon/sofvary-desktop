@@ -204,7 +204,7 @@ pub fn get_agent_install_statuses_with_adapter(
                     .or(agent.config.cli.as_ref())
                     .cloned()
             });
-            let detected = command.is_some();
+            let detected = item.id == "sofvary-pi" || command.is_some();
             let last_test = configured
                 .as_ref()
                 .and_then(|agent| agent.last_test.clone());
@@ -261,6 +261,12 @@ pub fn start_agent_install_with_adapter(
             "{} is not supported on this platform",
             item.label
         )));
+    }
+    if item.id == "sofvary-pi" {
+        return get_agent_install_statuses_with_adapter(agent_store, adapter)?
+            .into_iter()
+            .find(|status| status.catalog.id == item.id)
+            .ok_or_else(|| AgentInstallError::Unsupported(item.id.clone()));
     }
 
     let subject = agent_install_subject(&item);
@@ -417,7 +423,7 @@ fn ensure_node_toolchain_available(
 ) -> AgentInstallResult<NodeToolchain> {
     resolve_node_toolchain_with_adapter(adapter).map_err(|error| {
         AgentInstallError::Unsupported(format!(
-            "Sofvary Pi requires the Node.js Toolchain from Settings: {error}"
+            "Sofvary Agent requires the Node.js Toolchain from Settings: {error}"
         ))
     })
 }
@@ -449,7 +455,7 @@ fn install_package_dependencies(
             summarize_command_output(&output.stderr, &output.stdout)
         ))),
         Err(error) => Err(AgentInstallError::Unsupported(format!(
-            "Sofvary Pi requires pnpm from the Node.js Toolchain to install package dependencies: {error}"
+            "Sofvary Agent requires pnpm from the Node.js Toolchain to install package dependencies: {error}"
         ))),
     }
 }
@@ -758,7 +764,7 @@ fn write_pi_shim(
     }
     if !package_dir.is_dir() {
         return Err(AgentInstallError::InvalidArtifact(
-            "Pi package directory was not created".to_string(),
+            "Sofvary Agent package directory was not created".to_string(),
         ));
     }
     Ok(shim)
@@ -770,7 +776,7 @@ fn pi_agent_config(previous: Option<AgentConfig>, executable: PathBuf) -> AgentC
     AgentConfig {
         id: "sofvary-pi".to_string(),
         provider: AgentProvider::SofvaryPi,
-        label: "Sofvary Pi".to_string(),
+        label: "Sofvary Agent".to_string(),
         enabled: previous_enabled,
         acp: None,
         cli: Some(AgentCommandConfig {
@@ -782,6 +788,7 @@ fn pi_agent_config(previous: Option<AgentConfig>, executable: PathBuf) -> AgentC
         allow_cli_fallback: false,
         default_interaction_mode: None,
         last_test: previous_last_test,
+        pi_native_provider: None,
     }
 }
 
@@ -798,6 +805,12 @@ fn install_state_for_item(
         );
     }
     if detected {
+        if item.id == "sofvary-pi" {
+            return (
+                AgentInstallStateKind::Installed,
+                "Sofvary Agent is built into Sofvary.".to_string(),
+            );
+        }
         return (
             AgentInstallStateKind::Installed,
             "已在本机发现可用命令。".to_string(),
@@ -900,18 +913,18 @@ fn install_catalog() -> Vec<AgentInstallCatalogItem> {
     vec![
         AgentInstallCatalogItem {
             id: "sofvary-pi".to_string(),
-            label: "Sofvary Pi".to_string(),
+            label: "Sofvary Agent".to_string(),
             icon_key: "sofvary-pi".to_string(),
             provider: AgentProvider::SofvaryPi,
             docs_url: "https://github.com/earendil-works/pi".to_string(),
-            install_capability: AgentInstallCapability::Managed,
+            install_capability: AgentInstallCapability::Unavailable,
             recommended: true,
-            managed: true,
+            managed: false,
             supported: true,
-            detect_commands: vec!["pi".to_string()],
+            detect_commands: Vec::new(),
             acp: None,
-            cli: Some(command_template("pi", &["--mode", "rpc"])),
-            version_command: Some(command_template("pi", &["--version"])),
+            cli: None,
+            version_command: None,
         },
         AgentInstallCatalogItem {
             id: "codex".to_string(),

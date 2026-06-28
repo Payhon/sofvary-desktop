@@ -2,6 +2,7 @@ use crate::platform::{current_adapter, PlatformAdapter, PlatformError};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -59,7 +60,9 @@ impl AgentProvider {
 pub enum AgentTransportKind {
     Acp,
     Cli,
+    PiNative,
     PiRpc,
+    Terminal,
     WorkspaceHandoff,
 }
 
@@ -68,7 +71,9 @@ impl AgentTransportKind {
         match self {
             Self::Acp => "acp",
             Self::Cli => "cli",
+            Self::PiNative => "pi-native",
             Self::PiRpc => "pi-rpc",
+            Self::Terminal => "terminal",
             Self::WorkspaceHandoff => "workspace-handoff",
         }
     }
@@ -79,6 +84,7 @@ impl AgentTransportKind {
 pub enum AgentInteractionMode {
     PiNative,
     ThirdPartyManaged,
+    ThirdPartyTerminal,
     WorkspaceHandoff,
 }
 
@@ -109,6 +115,29 @@ pub struct AgentCommandConfig {
     pub source: AgentInstallSource,
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiNativeProviderConfig {
+    pub provider: String,
+    pub model: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+impl fmt::Debug for PiNativeProviderConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PiNativeProviderConfig")
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTestRecord {
@@ -136,14 +165,16 @@ pub struct AgentConfig {
     pub default_interaction_mode: Option<AgentInteractionMode>,
     #[serde(default)]
     pub last_test: Option<AgentTestRecord>,
+    #[serde(skip, default)]
+    pub pi_native_provider: Option<PiNativeProviderConfig>,
 }
 
 impl AgentConfig {
     pub fn is_ready(&self) -> bool {
         self.enabled
-            && (self.acp.is_some()
-                || (self.provider == AgentProvider::SofvaryPi && self.cli.is_some())
-                || (self.allow_cli_fallback && self.cli.is_some()))
+            && (self.provider == AgentProvider::SofvaryPi
+                || self.acp.is_some()
+                || self.cli.is_some())
     }
 
     pub fn effective_interaction_mode(&self) -> AgentInteractionMode {
@@ -156,7 +187,7 @@ pub fn default_interaction_mode_for_provider(provider: AgentProvider) -> AgentIn
     if provider == AgentProvider::SofvaryPi {
         AgentInteractionMode::PiNative
     } else {
-        AgentInteractionMode::ThirdPartyManaged
+        AgentInteractionMode::ThirdPartyTerminal
     }
 }
 
@@ -385,6 +416,7 @@ mod tests {
                     allow_cli_fallback: false,
                     default_interaction_mode: None,
                     last_test: None,
+                    pi_native_provider: None,
                 },
                 AgentConfig {
                     id: "opencode".to_string(),
@@ -401,6 +433,7 @@ mod tests {
                     allow_cli_fallback: false,
                     default_interaction_mode: Some(AgentInteractionMode::WorkspaceHandoff),
                     last_test: None,
+                    pi_native_provider: None,
                 },
             ],
         }
@@ -411,6 +444,43 @@ mod tests {
             state.agents[1].effective_interaction_mode(),
             AgentInteractionMode::WorkspaceHandoff
         );
+    }
+
+    #[test]
+    fn sofvary_pi_is_ready_without_external_cli() {
+        let config = AgentConfig {
+            id: "sofvary-pi".to_string(),
+            provider: AgentProvider::SofvaryPi,
+            label: "Sofvary Agent".to_string(),
+            enabled: true,
+            acp: None,
+            cli: None,
+            allow_cli_fallback: false,
+            default_interaction_mode: None,
+            last_test: None,
+            pi_native_provider: None,
+        };
+
+        assert!(config.is_ready());
+        assert_eq!(
+            config.effective_interaction_mode(),
+            AgentInteractionMode::PiNative
+        );
+    }
+
+    #[test]
+    fn pi_native_provider_debug_redacts_api_key() {
+        let config = PiNativeProviderConfig {
+            provider: "openai".to_string(),
+            model: "gpt-5".to_string(),
+            base_url: Some("https://api.example.test/v1".to_string()),
+            api_key: Some("sk-secret-value".to_string()),
+        };
+
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains("[redacted]"));
+        assert!(!debug.contains("sk-secret-value"));
     }
 
     #[test]

@@ -29,7 +29,8 @@
   "harnessPolicy": {
     "systemInstructions": [
       "Generate a React + Vite frontend, Node local API, and workspace-local SQLite persistence.",
-      "Frontend code must call /api/* endpoints only and must never import SQLite, sql.js, database files, or filesystem modules."
+      "Frontend code must call /api/* endpoints only and must never import SQLite, sql.js, database files, or filesystem modules.",
+      "Map the user intent into domain-specific entities, workflows, and seed data before final validation."
     ],
     "fileSystemRules": [
       "Write React and Node API files only inside generated/react.",
@@ -43,6 +44,9 @@
       "Use the managed sql.js dependency or the Sofvary better-sqlite3 compatibility API only; do not add native SQLite packages or package install scripts.",
       "SQL statements use prepared statements for user-controlled values.",
       "The SQLite database file stays at generated/data/app.sqlite.",
+      "The generated UI must be a compact operational app for the requested domain, not a generic customer manager, prompt echo, or marketing page.",
+      "The first screen should expose useful domain workflows through navigation, tables, forms, filters, and summaries that match the user intent.",
+      "Generated React code must avoid unbounded effects, busy loops, tight timers, state updates during render, and heavy animations that can make the preview unresponsive.",
       "Keep Sofvary shell UI out of generated app source.",
       "The generated app must be exportable without Sofvary floating menu or build overlay UI."
     ],
@@ -71,6 +75,8 @@
     "Harness {{harness.id}}@{{harness.version}} constraints are represented in the prompt envelope.",
     "Before writing UI text, choose a concise software name. Use '{{workspace.name}}' unless you can derive a better short domain name from the user intent.",
     "Visible app title and browser title must use the concise software name, not the full user requirement.",
+    "Generated software models the requested business domain with realistic entities, workflows, validation, and seed data.",
+    "React components avoid unbounded loops, tight timers, uncontrolled polling, and heavy synchronous render work.",
     "Do not render PromptEnvelope text, runtime repair fallback text, diagnostic text, or Sofvary shell copy inside the generated app UI."
   ],
   "updateMode": {

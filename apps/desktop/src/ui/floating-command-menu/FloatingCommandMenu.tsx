@@ -59,8 +59,12 @@ import {
   formatAgentInteractionMode,
   formatAgentInteractionModeDetail,
   formatDiscoveredAgentStatus,
+  getAgentDisplayLabel,
   getAgentStatusLine,
-  sortAgents,
+  getSettingsAgentInstallStatuses,
+  getSettingsAgents,
+  getSettingsDiscoveredAgents,
+  isBuiltInSofvaryAgent,
 } from "../../core/agents/agentLogic";
 import {
   canInstallAgent,
@@ -78,6 +82,7 @@ import {
   formatBuildThreadStatus,
   getBuildThreadActivity,
   getWorkspaceBuildThread,
+  mergeBuildThreadEntries,
   summarizeBuildThreadError,
   visibleThreadEntries,
   type BuildThreadActivitySummary,
@@ -91,6 +96,8 @@ import {
   createLlmProviderConfigFromPreset,
   getLlmModelOptions,
   getLlmProviderPreset,
+  getSelectableSofvaryAgentLlmProviders,
+  getSelectedSofvaryAgentLlmProvider,
   llmProviderPresets,
   normalizeLlmProviderDraft,
   sortLlmProviders,
@@ -289,6 +296,10 @@ function fallbackDesktopT(
     "task.activity.files": "files",
     "task.activity.tools": "tools",
     "task.activity.latest": "Latest output",
+    "llm.selectProvider": "Select LLM",
+    "llm.noUsableProvider": "No usable LLM Provider",
+    "llm.configureUsableProvider": "Configure an enabled provider with a model and required API key in Settings > AI.",
+    "llm.requiredForSofvaryAgent": "Select a configured LLM Provider before using Sofvary Agent.",
     "action.rename": "Rename",
     "task.rename": "Rename task",
     "workspace.rename": "Rename software",
@@ -325,11 +336,14 @@ interface FloatingCommandMenuProps {
   buildThreads: BuildThreadSummary[];
   activeThread: BuildThreadSummary | null;
   activeThreadDetail: BuildThreadDetail | null;
+  activeTerminalSessionId: string | null;
+  activeTerminalOutput: string;
   promptEnvelopeSummary: PromptEnvelopeSummary | null;
   workspaces: WorkspaceSummary[];
   installedPacks: InstalledPackSummary[];
   llmProviderState: LlmProviderConfigState;
   llmProviderStatusLine: string;
+  selectedLlmProviderId: string | null;
   appearancePreferences: UiAppearancePreferences;
   themePreference: UiThemePreference;
   resolvedTheme: ResolvedUiTheme;
@@ -366,6 +380,9 @@ interface FloatingCommandMenuProps {
   onOpenHandoffAgent: () => void;
   onRescanHandoffWorkspace: () => void;
   onCopyHandoffRepairPrompt: () => void;
+  onSendTerminalInput: (value: string) => void;
+  onSendHandoffPromptToTerminal: () => void;
+  onStopTerminal: () => void;
   onAddDiscoveredAgent: (agent: DiscoveredAgent) => void;
   onToggleAgentEnabled: (agent: AgentConfig) => void;
   onSetDefaultAgent: (agentId: string) => void;
@@ -391,6 +408,7 @@ interface FloatingCommandMenuProps {
   onDeleteLlmProvider: (providerId: string) => void;
   onTestLlmProvider: (providerId: string) => void;
   onRefreshLlmProviders: () => void;
+  onLlmProviderChange: (providerId: string) => void;
   onAppearanceChange: (preferences: UiAppearancePreferences) => void;
   onThemePreferenceChange: (preference: UiThemePreference) => void;
   onDeepLinkChange: (value: string) => void;
@@ -432,11 +450,14 @@ export function FloatingCommandMenu({
   buildThreads,
   activeThread,
   activeThreadDetail,
+  activeTerminalSessionId,
+  activeTerminalOutput,
   promptEnvelopeSummary,
   workspaces,
   installedPacks,
   llmProviderState,
   llmProviderStatusLine,
+  selectedLlmProviderId,
   appearancePreferences,
   themePreference,
   resolvedTheme,
@@ -473,6 +494,9 @@ export function FloatingCommandMenu({
   onOpenHandoffAgent,
   onRescanHandoffWorkspace,
   onCopyHandoffRepairPrompt,
+  onSendTerminalInput,
+  onSendHandoffPromptToTerminal,
+  onStopTerminal,
   onAddDiscoveredAgent,
   onToggleAgentEnabled,
   onSetDefaultAgent,
@@ -492,6 +516,7 @@ export function FloatingCommandMenu({
   onDeleteLlmProvider,
   onTestLlmProvider,
   onRefreshLlmProviders,
+  onLlmProviderChange,
   onAppearanceChange,
   onThemePreferenceChange,
   onDeepLinkChange,
@@ -516,7 +541,18 @@ export function FloatingCommandMenu({
   const securityState = isBusy ? t("menu.securityChecking") : t("status.ready");
   const visibleRuntimes = runtimeOptions;
   const selectedAgent = selectableAgents.find((agent) => agent.id === selectedAgentId) ?? null;
-  const canStart = !isBusy && selectableAgents.length > 0 && createPrompt.trim().length > 0;
+  const selectableLlmProviders = getSelectableSofvaryAgentLlmProviders(llmProviderState);
+  const selectedLlmProvider =
+    getSelectedSofvaryAgentLlmProvider(selectedLlmProviderId, llmProviderState);
+  const selectedAgentRequiresLlm = isBuiltInSofvaryAgent(selectedAgent);
+  const selectedLlmProviderStatusLine = selectedLlmProvider
+    ? `${selectedLlmProvider.label} / ${selectedLlmProvider.model}`
+    : t("llm.requiredForSofvaryAgent");
+  const canStart =
+    !isBusy &&
+    selectableAgents.length > 0 &&
+    createPrompt.trim().length > 0 &&
+    (!selectedAgentRequiresLlm || selectedLlmProvider !== null);
   const [isTaskRailOpen, setTaskRailOpen] = useState(false);
   const [activeSettingsSection, setActiveSettingsSection] =
     useState<SettingsSectionKey>(defaultSettingsSection);
@@ -565,16 +601,21 @@ export function FloatingCommandMenu({
             runtimePreflightMessage={runtimePreflightMessage}
             currentRuntimeLabel={currentRuntime?.label ?? runtimeChoice}
             securityState={securityState}
-            selectedAgentLabel={selectedAgent?.label ?? t("menu.unconfigured")}
+            selectedAgentLabel={selectedAgent ? getAgentDisplayLabel(selectedAgent) : t("menu.unconfigured")}
             selectableAgents={selectableAgents}
             selectedAgentId={selectedAgentId}
             selectedAgentMode={selectedAgentMode}
             availableAgentModes={availableAgentModes}
             agentStatusLine={agentStatusLine}
+            selectableLlmProviders={selectableLlmProviders}
+            selectedLlmProviderId={selectedLlmProvider?.providerId ?? selectedLlmProviderId}
+            selectedLlmProviderStatusLine={selectedLlmProviderStatusLine}
             visibleRuntimes={visibleRuntimes}
             threads={buildThreads}
             activeThread={activeThread}
             detail={activeThreadDetail}
+            activeTerminalSessionId={activeTerminalSessionId}
+            activeTerminalOutput={activeTerminalOutput}
             promptEnvelopeSummary={promptEnvelopeSummary}
             workspaceCount={workspaces.length}
             onCreatePromptChange={onCreatePromptChange}
@@ -586,6 +627,7 @@ export function FloatingCommandMenu({
             onRuntimeChoiceChange={onRuntimeChoiceChange}
             onAgentChange={onAgentChange}
             onAgentModeChange={onAgentModeChange}
+            onLlmProviderChange={onLlmProviderChange}
             onSelect={onSelectBuildThread}
             onStartNew={onStartNewBuildThreadDraft}
             onContinue={onContinueBuildThread}
@@ -598,6 +640,9 @@ export function FloatingCommandMenu({
             onOpenHandoffAgent={onOpenHandoffAgent}
             onRescanHandoffWorkspace={onRescanHandoffWorkspace}
             onCopyHandoffRepairPrompt={onCopyHandoffRepairPrompt}
+            onSendTerminalInput={onSendTerminalInput}
+            onSendHandoffPromptToTerminal={onSendHandoffPromptToTerminal}
+            onStopTerminal={onStopTerminal}
           />
         ) : null}
 
@@ -1237,10 +1282,15 @@ interface CreateTaskSurfaceProps {
   selectedAgentMode: AgentInteractionMode;
   availableAgentModes: AgentInteractionMode[];
   agentStatusLine: string;
+  selectableLlmProviders: LlmProviderConfig[];
+  selectedLlmProviderId: string | null;
+  selectedLlmProviderStatusLine: string;
   visibleRuntimes: RuntimeOption[];
   threads: BuildThreadSummary[];
   activeThread: BuildThreadSummary | null;
   detail: BuildThreadDetail | null;
+  activeTerminalSessionId: string | null;
+  activeTerminalOutput: string;
   promptEnvelopeSummary: PromptEnvelopeSummary | null;
   workspaceCount: number;
   onCreatePromptChange: (value: string) => void;
@@ -1252,6 +1302,7 @@ interface CreateTaskSurfaceProps {
   onRuntimeChoiceChange: (runtimeChoice: RuntimeChoice) => void;
   onAgentChange: (agentId: string) => void;
   onAgentModeChange: (mode: AgentInteractionMode) => void;
+  onLlmProviderChange: (providerId: string) => void;
   onSelect: (threadId: string) => void;
   onStartNew: () => void;
   onContinue: () => void;
@@ -1264,6 +1315,9 @@ interface CreateTaskSurfaceProps {
   onOpenHandoffAgent: () => void;
   onRescanHandoffWorkspace: () => void;
   onCopyHandoffRepairPrompt: () => void;
+  onSendTerminalInput: (value: string) => void;
+  onSendHandoffPromptToTerminal: () => void;
+  onStopTerminal: () => void;
 }
 
 function CreateTaskSurface({
@@ -1284,10 +1338,15 @@ function CreateTaskSurface({
   selectedAgentMode,
   availableAgentModes,
   agentStatusLine,
+  selectableLlmProviders,
+  selectedLlmProviderId,
+  selectedLlmProviderStatusLine,
   visibleRuntimes,
   threads,
   activeThread,
   detail,
+  activeTerminalSessionId,
+  activeTerminalOutput,
   promptEnvelopeSummary,
   workspaceCount,
   onCreatePromptChange,
@@ -1299,6 +1358,7 @@ function CreateTaskSurface({
   onRuntimeChoiceChange,
   onAgentChange,
   onAgentModeChange,
+  onLlmProviderChange,
   onSelect,
   onStartNew,
   onContinue,
@@ -1311,6 +1371,9 @@ function CreateTaskSurface({
   onOpenHandoffAgent,
   onRescanHandoffWorkspace,
   onCopyHandoffRepairPrompt,
+  onSendTerminalInput,
+  onSendHandoffPromptToTerminal,
+  onStopTerminal,
 }: CreateTaskSurfaceProps) {
   const { t } = useDesktopLocale();
   const isContinuingTask = activeThread !== null;
@@ -1320,8 +1383,12 @@ function CreateTaskSurface({
   const didAutoOpenHistoryRailRef = useRef(false);
   const composerValue = isContinuingTask ? continuePrompt : createPrompt;
   const onComposerChange = isContinuingTask ? onContinuePromptChange : onCreatePromptChange;
-  const [openComposerMenu, setOpenComposerMenu] = useState<"agent" | "agent-mode" | "runtime" | null>(null);
+  const [openComposerMenu, setOpenComposerMenu] = useState<
+    "agent" | "agent-mode" | "llm" | "runtime" | null
+  >(null);
   const composerPickerRootRef = useRef<HTMLDivElement | null>(null);
+  const taskRailToggleRef = useRef<HTMLButtonElement | null>(null);
+  const taskRailRef = useRef<HTMLElement | null>(null);
   const selectedRuntime =
     visibleRuntimes.find((option) => option.kind === runtimeChoice) ?? visibleRuntimes[0];
   const activeRuntimeOption = activeThread
@@ -1333,9 +1400,21 @@ function CreateTaskSurface({
       : runtimeChoice === "auto" && intentSelection
         ? `AI: ${formatSoftwareType(intentSelection.softwareType)}`
         : activeRuntimeOption ? runtimeOptionLabel(activeRuntimeOption.kind, t) : currentRuntimeLabel;
+  const activeThreadAgent = activeThread
+    ? selectableAgents.find((agent) => agent.id === activeThread.agentId) ?? null
+    : null;
+  const selectedDraftAgent =
+    selectableAgents.find((agent) => agent.id === selectedAgentId) ?? null;
+  const shouldShowLlmProviderSelector = !activeThread && isBuiltInSofvaryAgent(selectedDraftAgent);
+  const selectedLlmProvider =
+    selectableLlmProviders.find((provider) => provider.providerId === selectedLlmProviderId) ??
+    null;
   const activeAgentLabel = activeThread
-    ? (selectableAgents.find((agent) => agent.id === activeThread.agentId)?.label ??
-      activeThread.agentId)
+    ? activeThreadAgent
+      ? getAgentDisplayLabel(activeThreadAgent)
+      : activeThread.agentId === "sofvary-pi"
+        ? "Sofvary Agent"
+        : activeThread.agentId
     : selectedAgentLabel;
   const activeAgentModeLabel = activeThread
     ? formatAgentInteractionMode(activeThread.agentMode, t)
@@ -1347,8 +1426,26 @@ function CreateTaskSurface({
       { icon: "◌", label: t("stats.security"), value: securityState },
       { icon: "AI", label: t("stats.currentAgent"), value: activeAgentLabel },
       { icon: "↔", label: t("stats.currentAgentMode", {}, "Agent mode"), value: activeAgentModeLabel },
+      ...(shouldShowLlmProviderSelector
+        ? [
+            {
+              icon: "LLM",
+              label: t("stats.currentLlmProvider", {}, "LLM"),
+              value: selectedLlmProvider?.label ?? t("llm.requiredForSofvaryAgent"),
+            },
+          ]
+        : []),
     ],
-    [activeAgentLabel, activeAgentModeLabel, activeRuntimeLabel, securityState, t, workspaceCount],
+    [
+      activeAgentLabel,
+      activeAgentModeLabel,
+      activeRuntimeLabel,
+      securityState,
+      selectedLlmProvider?.label,
+      shouldShowLlmProviderSelector,
+      t,
+      workspaceCount,
+    ],
   );
 
   useEffect(() => {
@@ -1366,6 +1463,23 @@ function CreateTaskSurface({
       document.removeEventListener("pointerdown", handlePointerDown);
     };
   }, [openComposerMenu]);
+
+  useEffect(() => {
+    if (!shouldShowTaskRail) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (taskRailToggleRef.current?.contains(target)) return;
+      if (taskRailRef.current?.contains(target)) return;
+      onCloseTaskRail();
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [onCloseTaskRail, shouldShowTaskRail]);
 
   useEffect(() => {
     if (activeThread) {
@@ -1409,6 +1523,7 @@ function CreateTaskSurface({
       {shouldShowThreadChrome ? (
         <div className="create-task-toolbar">
           <button
+            ref={taskRailToggleRef}
             className="task-rail-toggle"
             type="button"
             aria-label={shouldShowTaskRail ? t("task.hideRail") : t("task.showRail")}
@@ -1445,6 +1560,7 @@ function CreateTaskSurface({
       <div className="create-task-layout">
         {shouldShowThreadChrome ? (
           <TaskRail
+            railRef={taskRailRef}
             threads={threads}
             activeThread={activeThread}
             isBusy={isBusy}
@@ -1467,6 +1583,8 @@ function CreateTaskSurface({
                 <TaskConversationPanel
                   activeThread={activeThread}
                   detail={detail}
+                  activeTerminalSessionId={activeTerminalSessionId}
+                  activeTerminalOutput={activeTerminalOutput}
                   isBusy={isBusy}
                   onCancel={onCancel}
                   onRepairPreviewBlockedThread={onRepairPreviewBlockedThread}
@@ -1475,6 +1593,9 @@ function CreateTaskSurface({
                   onOpenHandoffAgent={onOpenHandoffAgent}
                   onRescanHandoffWorkspace={onRescanHandoffWorkspace}
                   onCopyHandoffRepairPrompt={onCopyHandoffRepairPrompt}
+                  onSendTerminalInput={onSendTerminalInput}
+                  onSendHandoffPromptToTerminal={onSendHandoffPromptToTerminal}
+                  onStopTerminal={onStopTerminal}
                 />
               </div>
 
@@ -1543,6 +1664,23 @@ function CreateTaskSurface({
                       }}
                     />
 
+                    {shouldShowLlmProviderSelector ? (
+                      <LlmProviderSelectorPanel
+                        providers={selectableLlmProviders}
+                        selectedProviderId={selectedLlmProviderId}
+                        providerStatusLine={selectedLlmProviderStatusLine}
+                        disabled={isBusy}
+                        isOpen={openComposerMenu === "llm"}
+                        onToggle={() =>
+                          setOpenComposerMenu((current) => (current === "llm" ? null : "llm"))
+                        }
+                        onChange={(providerId) => {
+                          onLlmProviderChange(providerId);
+                          setOpenComposerMenu(null);
+                        }}
+                      />
+                    ) : null}
+
                     <RuntimeSelectorPanel
                       runtimes={visibleRuntimes}
                       selectedRuntime={selectedRuntime}
@@ -1589,7 +1727,11 @@ function CreateTaskSurface({
                     type="button"
                     disabled={!canStart}
                     aria-label={t("task.start")}
-                    title={t("task.start")}
+                    title={
+                      shouldShowLlmProviderSelector && !selectedLlmProvider
+                        ? t("llm.requiredForSofvaryAgent")
+                        : t("task.start")
+                    }
                     onClick={onStart}
                     data-no-drag
                   >
@@ -1598,6 +1740,11 @@ function CreateTaskSurface({
                 )}
               </div>
             </div>
+            {shouldShowLlmProviderSelector && !selectedLlmProvider ? (
+              <p className="create-composer-warning" role="status">
+                {t("llm.requiredForSofvaryAgent")}
+              </p>
+            ) : null}
           </section>
         </main>
       </div>
@@ -1606,6 +1753,7 @@ function CreateTaskSurface({
 }
 
 interface TaskRailProps {
+  railRef: RefObject<HTMLElement | null>;
   threads: BuildThreadSummary[];
   activeThread: BuildThreadSummary | null;
   isBusy: boolean;
@@ -1617,6 +1765,7 @@ interface TaskRailProps {
 }
 
 function TaskRail({
+  railRef,
   threads,
   activeThread,
   isBusy,
@@ -1650,7 +1799,7 @@ function TaskRail({
   };
 
   return (
-    <aside className="task-rail" aria-label={t("task.session")} aria-hidden={!isOpen}>
+    <aside ref={railRef} className="task-rail" aria-label={t("task.session")} aria-hidden={!isOpen}>
       {isOpen ? (
         <div className="thread-list">
           <button
@@ -1764,6 +1913,8 @@ function TaskRail({
 interface TaskConversationPanelProps {
   activeThread: BuildThreadSummary | null;
   detail: BuildThreadDetail | null;
+  activeTerminalSessionId: string | null;
+  activeTerminalOutput: string;
   isBusy: boolean;
   onCancel: () => void;
   onRepairPreviewBlockedThread: (thread: BuildThreadSummary) => void;
@@ -1772,11 +1923,18 @@ interface TaskConversationPanelProps {
   onOpenHandoffAgent: () => void;
   onRescanHandoffWorkspace: () => void;
   onCopyHandoffRepairPrompt: () => void;
+  onSendTerminalInput: (value: string) => void;
+  onSendHandoffPromptToTerminal: () => void;
+  onStopTerminal: () => void;
 }
+
+const TASK_TIMELINE_RENDER_WINDOW = 120;
 
 function TaskConversationPanel({
   activeThread,
   detail,
+  activeTerminalSessionId,
+  activeTerminalOutput,
   isBusy,
   onCancel,
   onRepairPreviewBlockedThread,
@@ -1785,9 +1943,17 @@ function TaskConversationPanel({
   onOpenHandoffAgent,
   onRescanHandoffWorkspace,
   onCopyHandoffRepairPrompt,
+  onSendTerminalInput,
+  onSendHandoffPromptToTerminal,
+  onStopTerminal,
 }: TaskConversationPanelProps) {
   const { t } = useDesktopLocale();
-  const entries = useMemo(() => visibleThreadEntries(detail), [detail]);
+  const [showFullTimeline, setShowFullTimeline] = useState(false);
+  const entries = useMemo(() => {
+    if (!detail) return [];
+    if (showFullTimeline) return visibleThreadEntries(detail);
+    return mergeBuildThreadEntries(detail.entries.slice(-(TASK_TIMELINE_RENDER_WINDOW * 2)));
+  }, [detail, showFullTimeline]);
   const activity = useMemo(
     () => getBuildThreadActivity(activeThread, detail),
     [activeThread, detail],
@@ -1796,7 +1962,21 @@ function TaskConversationPanel({
     () => mergeBuildThreadPresentationItems(entries.map((entry) => presentBuildThreadEntry(entry, t))),
     [entries, t],
   );
+  const visibleTimelineItems = showFullTimeline
+    ? timelineItems
+    : timelineItems.slice(-TASK_TIMELINE_RENDER_WINDOW);
+  const hiddenRawEntryCount =
+    !showFullTimeline && detail
+      ? Math.max(0, detail.entries.length - TASK_TIMELINE_RENDER_WINDOW * 2)
+      : 0;
+  const hiddenTimelineItemCount =
+    hiddenRawEntryCount + Math.max(0, timelineItems.length - visibleTimelineItems.length);
   const errorSummary = summarizeBuildThreadError(activeThread);
+  const hasTerminalActivity = Boolean(activeTerminalSessionId || activeTerminalOutput.trim().length > 0);
+
+  useEffect(() => {
+    setShowFullTimeline(false);
+  }, [activeThread?.id]);
 
   return (
     <section className="build-thread-panel create-task-transcript" aria-label={t("task.session")}>
@@ -1823,7 +2003,8 @@ function TaskConversationPanel({
               />
             ) : null}
             {activity ? <AgentActivityCallout activity={activity} /> : null}
-            {activeThread.agentMode === "workspace-handoff" ? (
+            {activeThread.agentMode === "workspace-handoff" ||
+            activeThread.agentMode === "third-party-terminal" ? (
               <HandoffActionBar
                 disabled={isBusy}
                 canCopyRepairPrompt={activeThread.status === "preview-blocked"}
@@ -1832,10 +2013,31 @@ function TaskConversationPanel({
                 onOpenAgent={onOpenHandoffAgent}
                 onRescan={onRescanHandoffWorkspace}
                 onCopyRepairPrompt={onCopyHandoffRepairPrompt}
+                canSendPromptToTerminal={Boolean(activeTerminalSessionId)}
+                onSendPromptToTerminal={onSendHandoffPromptToTerminal}
+              />
+            ) : null}
+            {hasTerminalActivity ? (
+              <AgentTerminalPanel
+                sessionId={activeTerminalSessionId}
+                output={activeTerminalOutput}
+                disabled={isBusy && !activeTerminalSessionId}
+                onSend={onSendTerminalInput}
+                onStop={onStopTerminal}
               />
             ) : null}
             <div className="thread-entry-list task-timeline">
-              {timelineItems.map((item) => (
+              {hiddenTimelineItemCount > 0 ? (
+                <button
+                  type="button"
+                  className="task-timeline__show-older"
+                  onClick={() => setShowFullTimeline(true)}
+                  data-no-drag
+                >
+                  {t("task.timeline.showOlder", { count: hiddenTimelineItemCount }, `显示更早 ${hiddenTimelineItemCount} 条记录`)}
+                </button>
+              ) : null}
+              {visibleTimelineItems.map((item) => (
                 <TaskTimelineItem key={item.id} item={item} />
               ))}
             </div>
@@ -1943,24 +2145,97 @@ function PreviewBlockedCallout({ thread, disabled, onRepair }: PreviewBlockedCal
   );
 }
 
+interface AgentTerminalPanelProps {
+  sessionId: string | null;
+  output: string;
+  disabled: boolean;
+  onSend: (value: string) => void;
+  onStop: () => void;
+}
+
+function AgentTerminalPanel({
+  sessionId,
+  output,
+  disabled,
+  onSend,
+  onStop,
+}: AgentTerminalPanelProps) {
+  const { t } = useDesktopLocale();
+  const [input, setInput] = useState("");
+  const outputRef = useRef<HTMLPreElement | null>(null);
+
+  useEffect(() => {
+    const element = outputRef.current;
+    if (element) {
+      element.scrollTop = element.scrollHeight;
+    }
+  }, [output]);
+
+  const sendInput = () => {
+    const value = input.trimEnd();
+    if (!value || !sessionId) return;
+    onSend(`${value}\n`);
+    setInput("");
+  };
+
+  return (
+    <section className="agent-terminal-panel" aria-label={t("task.terminal.title")}>
+      <header className="agent-terminal-panel__header">
+        <span>
+          <Terminal size={15} aria-hidden="true" />
+          <strong>{t("task.terminal.title")}</strong>
+        </span>
+        <button type="button" disabled={!sessionId} onClick={onStop} data-no-drag>
+          {t("task.terminal.stop")}
+        </button>
+      </header>
+      <pre ref={outputRef} className="agent-terminal-panel__output">
+        {output || t("task.terminal.empty")}
+      </pre>
+      <div className="agent-terminal-panel__input">
+        <input
+          value={input}
+          disabled={disabled || !sessionId}
+          placeholder={sessionId ? t("task.terminal.placeholder") : t("task.terminal.notStarted")}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              sendInput();
+            }
+          }}
+          data-no-drag
+        />
+        <button type="button" disabled={disabled || !sessionId || !input.trim()} onClick={sendInput} data-no-drag>
+          {t("task.terminal.send")}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 interface HandoffActionBarProps {
   disabled: boolean;
   canCopyRepairPrompt: boolean;
+  canSendPromptToTerminal: boolean;
   onCopyPrompt: () => void;
   onOpenWorkspace: () => void;
   onOpenAgent: () => void;
   onRescan: () => void;
   onCopyRepairPrompt: () => void;
+  onSendPromptToTerminal: () => void;
 }
 
 function HandoffActionBar({
   disabled,
   canCopyRepairPrompt,
+  canSendPromptToTerminal,
   onCopyPrompt,
   onOpenWorkspace,
   onOpenAgent,
   onRescan,
   onCopyRepairPrompt,
+  onSendPromptToTerminal,
 }: HandoffActionBarProps) {
   const { t } = useDesktopLocale();
   return (
@@ -1977,6 +2252,12 @@ function HandoffActionBar({
         <Bot size={14} aria-hidden="true" />
         {t("task.handoff.openAgent")}
       </button>
+      {canSendPromptToTerminal ? (
+        <button type="button" disabled={disabled} onClick={onSendPromptToTerminal} data-no-drag>
+          <Terminal size={14} aria-hidden="true" />
+          {t("task.handoff.sendPromptToTerminal")}
+        </button>
+      ) : null}
       <button type="button" disabled={disabled} onClick={onRescan} data-no-drag>
         <RefreshCw size={14} aria-hidden="true" />
         {t("task.handoff.rescan")}
@@ -2214,7 +2495,7 @@ function AgentSelectorPanel({
 }: AgentSelectorPanelProps) {
   const { t } = useDesktopLocale();
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
-  const selectorLabel = selectedAgent?.label ?? t("menu.unconfigured");
+  const selectorLabel = selectedAgent ? getAgentDisplayLabel(selectedAgent) : t("menu.unconfigured");
   const menuPosition = useComposerMenuPosition(isOpen, agents.length === 0 ? 160 : 260);
 
   return (
@@ -2267,7 +2548,7 @@ function AgentSelectorPanel({
                 data-no-drag
               >
                 <span aria-hidden="true">AI</span>
-                <strong>{agent.label}</strong>
+                <strong>{getAgentDisplayLabel(agent)}</strong>
               </button>
             ))
           )}
@@ -2347,6 +2628,94 @@ function AgentModeSelectorPanel({
               <small>{formatAgentInteractionModeDetail(mode, t)}</small>
             </button>
           ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+interface LlmProviderSelectorPanelProps {
+  providers: LlmProviderConfig[];
+  selectedProviderId: string | null;
+  providerStatusLine: string;
+  disabled: boolean;
+  isOpen: boolean;
+  onToggle: () => void;
+  onChange: (providerId: string) => void;
+}
+
+function LlmProviderSelectorPanel({
+  providers,
+  selectedProviderId,
+  providerStatusLine,
+  disabled,
+  isOpen,
+  onToggle,
+  onChange,
+}: LlmProviderSelectorPanelProps) {
+  const { t } = useDesktopLocale();
+  const selectedProvider =
+    providers.find((provider) => provider.providerId === selectedProviderId) ?? null;
+  const selectorLabel = selectedProvider?.label ?? t("llm.selectProvider");
+  const menuPosition = useComposerMenuPosition(isOpen, providers.length === 0 ? 170 : 280);
+
+  return (
+    <div
+      ref={menuPosition.rootRef}
+      className={`composer-picker composer-picker--llm composer-picker--${menuPosition.placement} ${
+        isOpen ? "is-open" : ""
+      }`}
+    >
+      <button
+        className="composer-picker__trigger composer-picker__trigger--llm"
+        type="button"
+        disabled={disabled}
+        aria-label={t("composer.llmProviderSelect", { label: selectorLabel })}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        title={providerStatusLine}
+        onClick={onToggle}
+        data-no-drag
+      >
+        <span className="composer-control-icon" aria-hidden="true">
+          LLM
+        </span>
+        <strong>{selectorLabel}</strong>
+        <span className="composer-control-chevron" aria-hidden="true">
+          ⌄
+        </span>
+      </button>
+      {isOpen ? (
+        <div
+          className="composer-picker__menu"
+          style={menuPosition.menuStyle}
+          role="listbox"
+          aria-label={t("composer.llmProviderSelect", { label: selectorLabel })}
+        >
+          {providers.length === 0 ? (
+            <div className="composer-picker__empty">
+              <strong>{t("llm.noUsableProvider")}</strong>
+              <small>{t("llm.configureUsableProvider")}</small>
+            </div>
+          ) : (
+            providers.map((provider) => (
+              <button
+                key={provider.providerId}
+                type="button"
+                role="option"
+                aria-selected={provider.providerId === selectedProviderId}
+                className={provider.providerId === selectedProviderId ? "is-selected" : ""}
+                onClick={() => onChange(provider.providerId)}
+                data-no-drag
+              >
+                <span aria-hidden="true">LLM</span>
+                <strong>{provider.label}</strong>
+                <small>
+                  {provider.kind} / {provider.model}
+                </small>
+              </button>
+            ))
+          )}
         </div>
       ) : null}
     </div>
@@ -2563,9 +2932,11 @@ function AgentSettingsPanel({
   onRefreshAgentInstallStatuses,
 }: AgentSettingsPanelProps) {
   const { t } = useDesktopLocale();
-  const configuredAgents = sortAgents(agentState.agents, agentState.defaultAgentId);
-  const addableAgents = discoverableAgentsToAdd(discoveredAgents, agentState.agents);
-  const discoveredById = new Map(discoveredAgents.map((agent) => [agent.config.id, agent]));
+  const configuredAgents = getSettingsAgents(agentState);
+  const visibleDiscoveredAgents = getSettingsDiscoveredAgents(discoveredAgents);
+  const visibleInstallStatuses = getSettingsAgentInstallStatuses(agentInstallStatuses);
+  const addableAgents = discoverableAgentsToAdd(visibleDiscoveredAgents, agentState.agents);
+  const discoveredById = new Map(visibleDiscoveredAgents.map((agent) => [agent.config.id, agent]));
 
   return (
     <section className="agent-settings agent-install-settings" aria-label={t("agent.title")}>
@@ -2587,9 +2958,9 @@ function AgentSettingsPanel({
         </button>
       </header>
 
-      {agentInstallStatuses.length > 0 ? (
+      {visibleInstallStatuses.length > 0 ? (
         <div className="agent-card-grid">
-          {agentInstallStatuses.map((status) => {
+          {visibleInstallStatuses.map((status) => {
             const configured = status.configured ?? agentState.agents.find((agent) => agent.id === status.catalog.id) ?? null;
             const discovered = discoveredById.get(status.catalog.id);
             const addable = discovered && !configured && discovered.detected;
@@ -2687,7 +3058,7 @@ function AgentSettingsPanel({
                     {agent.label}
                     {agent.id === agentState.defaultAgentId ? <span>{t("action.default")}</span> : null}
                   </strong>
-                  <small>{agent.acp ? "ACP" : agent.provider === "sofvary-pi" && agent.cli ? "Pi RPC" : agent.allowCliFallback && agent.cli ? "CLI" : t("agent.disconnected")} · {getAgentStatusLine(agent, t)}</small>
+                  <small>{agent.acp ? "ACP" : agent.allowCliFallback && agent.cli ? "CLI" : t("agent.disconnected")} · {getAgentStatusLine(agent, t)}</small>
                 </div>
                 <div className="agent-row__actions">
                   <button type="button" disabled={isBusy} onClick={() => onTestAgent(agent.id)}>

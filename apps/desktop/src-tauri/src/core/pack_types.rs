@@ -100,6 +100,7 @@ pub struct RuntimePackManifest {
     pub version: String,
     pub name: String,
     pub description: String,
+    #[serde(default)]
     pub builtin: bool,
     pub compatibility: PackCompatibility,
     pub stack: RuntimePackStack,
@@ -136,6 +137,7 @@ pub struct HarnessPackManifest {
     pub version: String,
     pub name: String,
     pub description: String,
+    #[serde(default)]
     pub builtin: bool,
     pub compatibility: PackCompatibility,
     pub runtime: Option<String>,

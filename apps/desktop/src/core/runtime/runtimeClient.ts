@@ -11,8 +11,9 @@ export async function runGeneratedApp(
   mode: RuntimeMode = "dev",
   policyApprovals?: PolicyApprovalSet,
   agentId?: string | null,
+  llmProviderId?: string | null,
 ): Promise<RuntimePreview> {
   return safeInvoke<RuntimePreview>("run_generated_app", {
-    payload: { requirement, runtimeKind, mode, policyApprovals, agentId },
+    payload: { requirement, runtimeKind, mode, policyApprovals, agentId, llmProviderId },
   });
 }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { BuildThreadEntry, BuildThreadSummary } from "../../types";
+import type { BuildThreadEntry, BuildThreadSummary, GatewayUniEvent } from "../../types";
 import { BuildThreadEventBatcher } from "./buildThreadEventBatcher";
 
 const baseThread: BuildThreadSummary = {
@@ -28,6 +28,19 @@ const baseEntry: BuildThreadEntry = {
   metadata: {},
 };
 
+function gatewayEvent(input: Partial<GatewayUniEvent> & Pick<GatewayUniEvent, "type">): GatewayUniEvent {
+  return {
+    eventId: input.eventId ?? `gateway-${input.sequence ?? 1}`,
+    threadId: input.threadId ?? "thread-a",
+    timestamp: input.timestamp ?? "2026-06-10T08:00:01Z",
+    agentId: input.agentId ?? "sofvary-agent",
+    transport: input.transport ?? "pi-native",
+    sequence: input.sequence ?? 1,
+    type: input.type,
+    payload: input.payload ?? {},
+  };
+}
+
 test("BuildThreadEventBatcher coalesces summaries and preserves entry order", () => {
   const batches: Array<{ summaries: BuildThreadSummary[]; entries: BuildThreadEntry[] }> = [];
   const batcher = new BuildThreadEventBatcher((batch) => batches.push(batch), 1000);
@@ -47,4 +60,31 @@ test("BuildThreadEventBatcher coalesces summaries and preserves entry order", ()
     batches[0].entries.map((entry) => entry.id),
     ["entry-a", "entry-b"],
   );
+});
+
+test("BuildThreadEventBatcher merges pending Gateway message deltas", () => {
+  const batches: Array<{ summaries: BuildThreadSummary[]; entries: BuildThreadEntry[] }> = [];
+  const batcher = new BuildThreadEventBatcher((batch) => batches.push(batch), 1000);
+
+  for (let index = 0; index < 500; index += 1) {
+    batcher.pushEntry({
+      ...baseEntry,
+      id: `entry-${index}`,
+      content: "x",
+      metadata: {
+        gatewayUniEvent: gatewayEvent({
+          type: "message.delta",
+          sequence: index + 1,
+          payload: { text: "x" },
+        }),
+      },
+    });
+  }
+  batcher.flush();
+
+  assert.equal(batches.length, 1);
+  assert.equal(batches[0].entries.length, 1);
+  const event = batches[0].entries[0]?.metadata?.gatewayUniEvent as GatewayUniEvent;
+  assert.equal(typeof event.payload.text === "string" ? event.payload.text.length : 0, 500);
+  assert.equal(batches[0].entries[0]?.metadata?.coalescedCount, 500);
 });

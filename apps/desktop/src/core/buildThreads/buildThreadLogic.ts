@@ -1,6 +1,7 @@
 import type {
   BuildThreadDetail,
   BuildThreadEntry,
+  BuildThreadActivityEvent,
   BuildThreadSummary,
   BuildThreadStatus,
   GatewayUniEvent,
@@ -266,7 +267,13 @@ export function appendBuildThreadEntry(
   if (entries.some((existing) => existing.id === entry.id)) {
     return entries;
   }
-  return mergeBuildThreadEntries([...entries, entry]);
+  const normalized = normalizeThreadEntry(entry);
+  const previous = entries[entries.length - 1];
+  const normalizedPrevious = previous ? normalizeThreadEntry(previous) : null;
+  if (normalizedPrevious && canMergeEntries(normalizedPrevious, normalized)) {
+    return [...entries.slice(0, -1), mergeThreadEntries(normalizedPrevious, normalized)];
+  }
+  return [...entries, normalized];
 }
 
 export function mergeBuildThreadEntries(entries: BuildThreadEntry[]): BuildThreadEntry[] {
@@ -324,21 +331,22 @@ export function getBuildOverlayViewModel(
   thread: BuildThreadSummary | null,
   latestEntry: BuildThreadEntry | null,
   t: Translator = fallbackBuildThreadT,
+  latestActivity: BuildThreadActivityEvent | null = null,
 ): BuildOverlayViewModel | null {
   if (state !== "Planning" && state !== "Building") {
     return null;
   }
 
   const gatewayEvent = latestEntry ? gatewayEventFromEntry(latestEntry) : null;
-  const activeStep = getBuildOverlayActiveStep(state, thread, latestEntry, gatewayEvent);
+  const activeStep = getBuildOverlayActiveStep(state, thread, latestEntry, gatewayEvent, latestActivity);
   const activeStepState: BuildOverlayStepState =
     thread?.status === "preview-blocked" ? "warning" : "active";
-  const phase = getBuildOverlayPhase(state, thread, gatewayEvent, t);
+  const phase = getBuildOverlayPhase(state, thread, gatewayEvent, t, latestActivity);
   return {
     title: thread?.title ?? t("build.overlay.title"),
     phase,
-    detail: getBuildOverlayDetail(thread, latestEntry, gatewayEvent, t),
-    eventLabel: getBuildOverlayEventLabel(gatewayEvent, t) ?? thread?.agentId ?? null,
+    detail: getBuildOverlayDetail(thread, latestEntry, gatewayEvent, t, latestActivity),
+    eventLabel: getBuildOverlayEventLabel(gatewayEvent, t, latestActivity) ?? thread?.agentId ?? null,
     actionLabel:
       thread?.status === "preview-blocked"
         ? t("build.overlay.repairPreview")
@@ -405,11 +413,18 @@ function getBuildOverlayActiveStep(
   thread: BuildThreadSummary | null,
   latestEntry: BuildThreadEntry | null,
   gatewayEvent: GatewayUniEvent | null,
+  latestActivity: BuildThreadActivityEvent | null = null,
 ): BuildOverlayStepId {
   if (thread?.status === "previewing") {
     return "preview";
   }
   if (thread?.status === "preview-blocked") {
+    return "preview";
+  }
+  if (latestActivity?.phase === "files") {
+    return "files";
+  }
+  if (latestActivity?.phase === "completed") {
     return "preview";
   }
   if (state === "Planning" || (!latestEntry && (thread?.status === "queued" || thread?.status === "planning"))) {
@@ -429,6 +444,7 @@ function getBuildOverlayPhase(
   thread: BuildThreadSummary | null,
   gatewayEvent: GatewayUniEvent | null,
   t: Translator,
+  latestActivity: BuildThreadActivityEvent | null = null,
 ): string {
   if (thread?.status === "repairing") {
     return t("build.status.repairing");
@@ -437,6 +453,9 @@ function getBuildOverlayPhase(
     return t("build.overlay.previewBlocked");
   }
   if (!gatewayEvent) {
+    if (latestActivity) {
+      return formatBuildActivityPhase(latestActivity, state, t);
+    }
     return state === "Planning" ? t("build.overlay.planning") : t("build.overlay.building");
   }
 
@@ -474,12 +493,13 @@ function getBuildOverlayDetail(
   latestEntry: BuildThreadEntry | null,
   gatewayEvent: GatewayUniEvent | null,
   t: Translator,
+  latestActivity: BuildThreadActivityEvent | null = null,
 ): string | null {
   if (thread?.status === "preview-blocked") {
     return thread.previewIssue?.summary ?? t("build.overlay.previewBlockedDetail");
   }
   if (!latestEntry) {
-    return null;
+    return latestActivity?.safeSummary ?? null;
   }
   if (!gatewayEvent) {
     if (latestEntry.kind === "assistant") {
@@ -504,9 +524,13 @@ function getBuildOverlayDetail(
   }
 }
 
-function getBuildOverlayEventLabel(gatewayEvent: GatewayUniEvent | null, t: Translator): string | null {
+function getBuildOverlayEventLabel(
+  gatewayEvent: GatewayUniEvent | null,
+  t: Translator,
+  latestActivity: BuildThreadActivityEvent | null = null,
+): string | null {
   if (!gatewayEvent) {
-    return null;
+    return latestActivity?.transport ?? null;
   }
   switch (gatewayEvent.type) {
     case "tool.started":
@@ -523,6 +547,33 @@ function getBuildOverlayEventLabel(gatewayEvent: GatewayUniEvent | null, t: Tran
       return payloadString(gatewayEvent, "path") ?? t("build.overlay.files");
     default:
       return t("build.overlay.gateway");
+  }
+}
+
+function formatBuildActivityPhase(
+  activity: BuildThreadActivityEvent,
+  state: ShellState,
+  t: Translator,
+): string {
+  switch (activity.phase) {
+    case "tool":
+      return t("build.overlay.tool");
+    case "terminal":
+      return t("build.overlay.terminal");
+    case "approval":
+      return t("build.overlay.approval");
+    case "files":
+      return t("build.overlay.files");
+    case "reasoning":
+      return t("build.overlay.reasoning");
+    case "completed":
+      return t("build.overlay.preview");
+    case "error":
+      return t("build.status.failed");
+    case "status":
+    case "agent-output":
+    default:
+      return state === "Planning" ? t("build.overlay.planning") : t("build.overlay.building");
   }
 }
 

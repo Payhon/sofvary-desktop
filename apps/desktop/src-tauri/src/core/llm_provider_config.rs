@@ -254,6 +254,21 @@ impl LlmProviderConfigStore {
             .into_iter()
             .find(|provider| provider.provider_id == id && provider.enabled))
     }
+
+    pub fn resolve_enabled(&self, provider_id: &str) -> LlmProviderConfigResult<LlmProviderConfig> {
+        let state = self.load()?;
+        let provider = state
+            .providers
+            .into_iter()
+            .find(|provider| provider.provider_id == provider_id)
+            .ok_or_else(|| LlmProviderConfigError::NotFound(provider_id.to_string()))?;
+        if !provider.enabled {
+            return Err(LlmProviderConfigError::Invalid(format!(
+                "provider is disabled: {provider_id}"
+            )));
+        }
+        Ok(provider)
+    }
 }
 
 pub fn fresh_llm_test_record(ok: bool, detail: impl Into<String>) -> LlmProviderTestRecord {

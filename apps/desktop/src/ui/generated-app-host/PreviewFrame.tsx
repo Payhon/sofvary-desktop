@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { PlatformBootstrap } from "../../types";
 import { safeInvoke } from "../../platform/tauriClient";
 import { useWindowDrag } from "../../platform/useWindowDrag";
@@ -6,6 +6,10 @@ import { showCommandWindow } from "../../platform/shellClient";
 import stealthEmptyGuide from "../../assets/stealth-empty-guide.png";
 import { useDesktopLocale } from "../i18n/DesktopLocaleProvider";
 import { GENERATED_APP_IFRAME_SECURITY_PROPS } from "./previewFrameSecurity";
+import {
+  PREVIEW_WATCHDOG_INTERVAL_MS,
+  evaluatePreviewWatchdogDrift,
+} from "./previewWatchdog";
 
 interface PreviewFrameProps {
   previewUrl: string | null;
@@ -15,11 +19,19 @@ export function PreviewFrame({ previewUrl }: PreviewFrameProps) {
   const { t } = useDesktopLocale();
   const startWindowDrag = useWindowDrag("main");
   const [shortcutLabel, setShortcutLabel] = useState("Alt+A+I");
+  const [isPreviewSuspended, setPreviewSuspended] = useState(false);
+  const lastWatchdogTickRef = useRef(0);
+  const watchdogHitCountRef = useRef(0);
   const shortcutKeys = useMemo(() => parseShortcutKeys(shortcutLabel), [shortcutLabel]);
   const openStealthUi = () => {
     void showCommandWindow().catch(() => {
       // Browser-only Vite sessions cannot open native Tauri windows.
     });
+  };
+  const resumePreview = () => {
+    watchdogHitCountRef.current = 0;
+    lastWatchdogTickRef.current = performance.now();
+    setPreviewSuspended(false);
   };
 
   useEffect(() => {
@@ -29,6 +41,32 @@ export function PreviewFrame({ previewUrl }: PreviewFrameProps) {
         // Browser-only Vite sessions use the Windows/Linux label fallback.
       });
   }, []);
+
+  useEffect(() => {
+    watchdogHitCountRef.current = 0;
+    lastWatchdogTickRef.current = performance.now();
+    setPreviewSuspended(false);
+  }, [previewUrl]);
+
+  useEffect(() => {
+    if (!previewUrl || isPreviewSuspended) {
+      return undefined;
+    }
+
+    lastWatchdogTickRef.current = performance.now();
+    const timer = window.setInterval(() => {
+      const now = performance.now();
+      const driftMs = now - lastWatchdogTickRef.current - PREVIEW_WATCHDOG_INTERVAL_MS;
+      lastWatchdogTickRef.current = now;
+      const decision = evaluatePreviewWatchdogDrift(watchdogHitCountRef.current, driftMs);
+      watchdogHitCountRef.current = decision.hitCount;
+      if (decision.shouldSuspend) {
+        setPreviewSuspended(true);
+      }
+    }, PREVIEW_WATCHDOG_INTERVAL_MS);
+
+    return () => window.clearInterval(timer);
+  }, [isPreviewSuspended, previewUrl]);
 
   if (!previewUrl) {
     return (
@@ -59,6 +97,26 @@ export function PreviewFrame({ previewUrl }: PreviewFrameProps) {
             </div>
             <button type="button" onClick={openStealthUi} data-no-drag>
               {t("preview.empty.open")}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isPreviewSuspended) {
+    return (
+      <div className="preview-guard" role="status" aria-label={t("preview.guard.aria")}>
+        <div className="preview-guard__panel" data-no-drag>
+          <p className="preview-guard__eyebrow">{t("preview.guard.eyebrow")}</p>
+          <h2>{t("preview.guard.title")}</h2>
+          <p>{t("preview.guard.copy")}</p>
+          <div className="preview-guard__actions">
+            <button type="button" onClick={resumePreview} data-no-drag>
+              {t("preview.guard.resume")}
+            </button>
+            <button type="button" className="is-secondary" onClick={openStealthUi} data-no-drag>
+              {t("preview.guard.open")}
             </button>
           </div>
         </div>

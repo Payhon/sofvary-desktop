@@ -202,6 +202,7 @@ pub fn ensure_exact_workspace_project_files(
     let expected: HashSet<String> = allowed_files.iter().cloned().collect();
     let mut actual = HashSet::new();
     collect_relative_files(&generated_root, &generated_root, &mut actual)?;
+    actual.retain(|path| !is_react_project_runtime_artifact(path));
 
     if actual != expected {
         return Err(ReactProjectRuntimeError::InvalidPromptEnvelope(format!(
@@ -211,6 +212,15 @@ pub fn ensure_exact_workspace_project_files(
     }
 
     Ok(())
+}
+
+fn is_react_project_runtime_artifact(path: &str) -> bool {
+    path == "react/pnpm-lock.yaml"
+        || path == "react/package-lock.json"
+        || path == "react/yarn.lock"
+        || path.starts_with("react/node_modules/")
+        || path.starts_with("react/.vite/")
+        || path.starts_with("react/dist/")
 }
 
 fn ensure_allowed_files_match_output_contract(
@@ -339,4 +349,119 @@ fn normalize_path_lexically(path: &Path) -> PathBuf {
         }
     }
     normalized
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::workspace_types::{WorkspaceConstraints, WorkspacePaths, WorkspacePreview};
+    use chrono::Utc;
+    use tempfile::tempdir;
+
+    #[test]
+    fn exact_workspace_project_files_ignore_dependency_install_artifacts() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("app_test");
+        let generated = root.join("generated");
+        fs::create_dir_all(generated.join("react/node_modules/.pnpm/dependency")).unwrap();
+        fs::create_dir_all(generated.join("react/src")).unwrap();
+        fs::create_dir_all(generated.join("ai")).unwrap();
+        fs::write(generated.join("ai/agents.json"), "{}").unwrap();
+        fs::write(
+            generated.join("react/src/App.tsx"),
+            "export function App() { return null; }",
+        )
+        .unwrap();
+        fs::write(
+            generated.join("react/pnpm-lock.yaml"),
+            "lockfileVersion: '9.0'",
+        )
+        .unwrap();
+        fs::write(
+            generated.join("react/node_modules/.pnpm-workspace-state.json"),
+            "{}",
+        )
+        .unwrap();
+        fs::write(
+            generated.join("react/node_modules/.pnpm/dependency/package.json"),
+            "{}",
+        )
+        .unwrap();
+
+        let manifest = test_manifest(root);
+        let spec = ReactProjectRuntimeSpec {
+            runtime_kind: "ai-agent-app".to_string(),
+            generated_root: "generated".to_string(),
+            entrypoint: "react/src/main.tsx".to_string(),
+            output_format: "ai-agent-app-project".to_string(),
+            label: "AI Agent App Runtime".to_string(),
+        };
+        let allowed_files = vec![
+            "ai/agents.json".to_string(),
+            "react/src/App.tsx".to_string(),
+        ];
+
+        ensure_exact_workspace_project_files(&manifest, &spec, &allowed_files).unwrap();
+    }
+
+    #[test]
+    fn exact_workspace_project_files_reject_extra_source_files() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("app_test");
+        let generated = root.join("generated");
+        fs::create_dir_all(generated.join("react/src")).unwrap();
+        fs::write(
+            generated.join("react/src/App.tsx"),
+            "export function App() { return null; }",
+        )
+        .unwrap();
+        fs::write(
+            generated.join("react/src/Extra.tsx"),
+            "export const extra = true;",
+        )
+        .unwrap();
+
+        let manifest = test_manifest(root);
+        let spec = ReactProjectRuntimeSpec {
+            runtime_kind: "ai-agent-app".to_string(),
+            generated_root: "generated".to_string(),
+            entrypoint: "react/src/main.tsx".to_string(),
+            output_format: "ai-agent-app-project".to_string(),
+            label: "AI Agent App Runtime".to_string(),
+        };
+        let allowed_files = vec!["react/src/App.tsx".to_string()];
+
+        assert!(matches!(
+            ensure_exact_workspace_project_files(&manifest, &spec, &allowed_files),
+            Err(ReactProjectRuntimeError::InvalidPromptEnvelope(_))
+        ));
+    }
+
+    fn test_manifest(root: PathBuf) -> AppBoxManifest {
+        let now = Utc::now().to_rfc3339();
+        AppBoxManifest {
+            app_id: "app_test".to_string(),
+            name: "Test".to_string(),
+            mode: "ai-agent-app".to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+            stack: vec!["React".to_string()],
+            paths: WorkspacePaths {
+                root: root.clone(),
+                generated: root.join("generated"),
+                generated_static: root.join("generated/static"),
+                runtime: root.join("runtime"),
+                snapshots: root.join("snapshots"),
+            },
+            constraints: WorkspaceConstraints {
+                boundary: root,
+                allow_external_files: false,
+                allow_remote_network: false,
+            },
+            preview: WorkspacePreview {
+                state: "empty".to_string(),
+                url: None,
+            },
+        }
+    }
 }

@@ -17,10 +17,6 @@ export function sortAgentInstallStatuses(
   agentState: AgentConfigState,
 ): AgentInstallStatus[] {
   return [...statuses].sort((left, right) => {
-    const leftPi = left.catalog.id === "sofvary-pi" ? 0 : 1;
-    const rightPi = right.catalog.id === "sofvary-pi" ? 0 : 1;
-    if (leftPi !== rightPi) return leftPi - rightPi;
-
     const leftDefault = left.catalog.id === agentState.defaultAgentId ? 0 : 1;
     const rightDefault = right.catalog.id === agentState.defaultAgentId ? 0 : 1;
     if (leftDefault !== rightDefault) return leftDefault - rightDefault;
@@ -59,7 +55,7 @@ export function formatAgentInstallState(status: AgentInstallStatus, t: Translato
 }
 
 export function formatAgentConnection(status: AgentInstallStatus, t: Translator = fallbackAgentInstallT): string {
-  if (status.configured?.provider === "sofvary-pi") return "Pi RPC";
+  if (status.configured?.provider === "sofvary-pi") return "Built-in";
   if (status.configured?.acp || status.catalog.acp) return "ACP";
   if (status.configured?.cli || status.catalog.cli) return "CLI";
   return t("agent.disconnected");
@@ -99,7 +95,7 @@ export function getAgentInstallActionLabel(status: AgentInstallStatus, t: Transl
 
 export function getAgentIconLabel(iconKey: string): string {
   const labels: Record<string, string> = {
-    "sofvary-pi": "Pi",
+    "sofvary-pi": "AI",
     codex: "Cx",
     "claude-code": "Cl",
     cursor: "Cu",

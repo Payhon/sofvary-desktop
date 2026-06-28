@@ -56,6 +56,16 @@ describe("pack configured prompt envelope compiler", () => {
     assert.deepEqual(envelope, reactSqliteGoldenPromptEnvelope);
     assert.deepEqual(envelope.fileSystemPolicy.allowedFiles, envelope.outputContract.files);
     assert.ok(envelope.harnessPolicy.blockedCapabilities.includes("remote-database"));
+    assert.ok(
+      envelope.harnessPolicy.systemInstructions.some((instruction) =>
+        instruction.includes("Do not default to a customer manager"),
+      ),
+    );
+    assert.ok(
+      envelope.acceptanceCriteria.some((criterion) =>
+        criterion.includes("avoid unbounded loops"),
+      ),
+    );
   });
 
   it("creates canvas2d envelope from pack resources", () => {

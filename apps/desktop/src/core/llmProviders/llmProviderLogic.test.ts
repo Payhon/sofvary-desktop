@@ -8,7 +8,11 @@ import {
   getLlmProviderPreset,
   getDefaultLlmProvider,
   getLlmProviderStatusLine,
+  getSelectableSofvaryAgentLlmProviders,
+  getSelectedSofvaryAgentLlmProvider,
+  isLlmProviderUsableForSofvaryAgent,
   llmProviderPresets,
+  llmProviderRequiresApiKey,
   normalizeLlmProviderDraft,
   sortLlmProviders,
 } from "./llmProviderLogic";
@@ -61,6 +65,52 @@ test("getLlmProviderStatusLine distinguishes key reference and test state", () =
     }),
     "LLM 配置正常",
   );
+});
+
+test("Sofvary Agent LLM selector only includes usable provider configs", () => {
+  const noKey: LlmProviderConfig = {
+    ...openai,
+    providerId: "kimi-missing-key",
+    label: "Kimi Missing Key",
+    kind: "kimi-coding",
+    apiKeyRef: null,
+  };
+  const testedByEnv: LlmProviderConfig = {
+    ...noKey,
+    providerId: "kimi-tested",
+    label: "Kimi Tested",
+    lastTest: {
+      ok: true,
+      checkedAt: "2026-06-28T08:00:00Z",
+      detail: "credential is available",
+    },
+  };
+  const ollama: LlmProviderConfig = {
+    ...openai,
+    providerId: "ollama",
+    label: "Ollama",
+    kind: "ollama",
+    apiKeyRef: null,
+    model: "qwen2.5-coder:7b",
+  };
+  const disabled = { ...openai, providerId: "disabled", enabled: false };
+  const state: LlmProviderConfigState = {
+    defaultProviderId: "ollama",
+    providers: [noKey, openai, testedByEnv, ollama, disabled],
+  };
+
+  assert.equal(llmProviderRequiresApiKey("kimi-coding"), true);
+  assert.equal(llmProviderRequiresApiKey("ollama"), false);
+  assert.equal(isLlmProviderUsableForSofvaryAgent(noKey), false);
+  assert.equal(isLlmProviderUsableForSofvaryAgent(testedByEnv), true);
+
+  assert.deepEqual(
+    getSelectableSofvaryAgentLlmProviders(state).map((provider) => provider.providerId),
+    ["ollama", "kimi-tested", "openai"],
+  );
+  assert.equal(getSelectedSofvaryAgentLlmProvider(null, state)?.providerId, "ollama");
+  assert.equal(getSelectedSofvaryAgentLlmProvider("openai", state)?.providerId, "openai");
+  assert.equal(getSelectedSofvaryAgentLlmProvider("kimi-missing-key", state)?.providerId, "ollama");
 });
 
 test("defaultLlmProviderConfig creates the built-in OpenAI provider draft", () => {

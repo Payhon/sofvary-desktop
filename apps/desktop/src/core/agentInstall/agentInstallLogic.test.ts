@@ -45,7 +45,7 @@ const agentState: AgentConfigState = {
   agents: [],
 };
 
-test("sortAgentInstallStatuses puts Sofvary Pi and default installed agents first", () => {
+test("sortAgentInstallStatuses puts default installed agents first", () => {
   const statuses: AgentInstallStatus[] = [
     baseStatus,
     {
@@ -64,25 +64,11 @@ test("sortAgentInstallStatuses puts Sofvary Pi and default installed agents firs
       detected: true,
       installState: "installed",
     },
-    {
-      ...baseStatus,
-      catalog: {
-        ...baseStatus.catalog,
-        id: "sofvary-pi",
-        label: "Sofvary Pi",
-        iconKey: "sofvary-pi",
-        provider: "sofvary-pi",
-        managed: true,
-        recommended: true,
-        installCapability: "managed",
-      },
-      installState: "not-installed",
-    },
   ];
 
   assert.deepEqual(
     sortAgentInstallStatuses(statuses, agentState).map((status) => status.catalog.id),
-    ["sofvary-pi", "opencode", "codex"],
+    ["opencode", "codex"],
   );
 });
 
@@ -160,6 +146,6 @@ test("canInstallAgent disables duplicate installs while active", () => {
 });
 
 test("getAgentIconLabel falls back for unknown keys", () => {
-  assert.equal(getAgentIconLabel("sofvary-pi"), "Pi");
+  assert.equal(getAgentIconLabel("sofvary-pi"), "AI");
   assert.equal(getAgentIconLabel("new-agent"), "NE");
 });

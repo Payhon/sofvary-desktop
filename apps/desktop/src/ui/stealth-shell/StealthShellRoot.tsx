@@ -12,7 +12,7 @@ import { listWorkspaces, previewWorkspace } from "../../core/workspace/workspace
 import { listenShellEvent } from "../../platform/eventClient";
 import { useWindowDrag } from "../../platform/useWindowDrag";
 import type {
-  BuildThreadEntry,
+  BuildThreadActivityEvent,
   BuildThreadSummary,
   RuntimePreview,
   ShellState,
@@ -27,11 +27,11 @@ export function StealthShellRoot() {
   const [preview, setPreview] = useState<RuntimePreview | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [activeBuildThread, setActiveBuildThread] = useState<BuildThreadSummary | null>(null);
-  const [latestBuildEntry, setLatestBuildEntry] = useState<BuildThreadEntry | null>(null);
+  const [latestBuildActivity, setLatestBuildActivity] = useState<BuildThreadActivityEvent | null>(null);
   const [switchingAppId, setSwitchingAppId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const activeBuildThreadIdRef = useRef<string | null>(null);
-  const latestBuildEntryIdRef = useRef<string | null>(null);
+  const latestBuildActivitySequenceRef = useRef<number | null>(null);
   const shellStateRef = useRef<ShellState>("BackgroundIdle");
   const startWindowDrag = useWindowDrag("main");
   const uiAppearance = useUiAppearance();
@@ -45,9 +45,9 @@ export function StealthShellRoot() {
 
   const clearBuildOverlayActivity = useCallback(() => {
     activeBuildThreadIdRef.current = null;
-    latestBuildEntryIdRef.current = null;
+    latestBuildActivitySequenceRef.current = null;
     setActiveBuildThread(null);
-    setLatestBuildEntry(null);
+    setLatestBuildActivity(null);
   }, []);
 
   const applyBuildThreadBatch = useCallback((batch: BuildThreadEventBatch) => {
@@ -76,18 +76,20 @@ export function StealthShellRoot() {
       }
     }
 
-    for (const entry of batch.entries) {
-      const activeId = activeBuildThreadIdRef.current;
-      if (activeId && activeId !== entry.threadId) {
-        continue;
-      }
-      if (latestBuildEntryIdRef.current === entry.id) {
-        continue;
-      }
-      latestBuildEntryIdRef.current = entry.id;
-      setLatestBuildEntry(entry);
-    }
   }, [clearBuildOverlayActivity, refreshWorkspaces]);
+
+  const applyBuildThreadActivity = useCallback((activity: BuildThreadActivityEvent) => {
+    const activeId = activeBuildThreadIdRef.current;
+    if (activeId && activeId !== activity.threadId) {
+      return;
+    }
+    if (latestBuildActivitySequenceRef.current === activity.counts.sequence) {
+      return;
+    }
+    activeBuildThreadIdRef.current = activity.threadId;
+    latestBuildActivitySequenceRef.current = activity.counts.sequence;
+    setLatestBuildActivity(activity);
+  }, []);
 
   useEffect(() => {
     const batcher = new BuildThreadEventBatcher(applyBuildThreadBatch);
@@ -119,8 +121,8 @@ export function StealthShellRoot() {
       listenShellEvent<BuildThreadSummary>("sofvary-build-thread-updated", (payload) => {
         batcher.pushSummary(payload);
       }),
-      listenShellEvent<BuildThreadEntry>("sofvary-build-thread-entry", (payload) => {
-        batcher.pushEntry(payload);
+      listenShellEvent<BuildThreadActivityEvent>("sofvary-build-thread-activity", (payload) => {
+        applyBuildThreadActivity(payload);
       }),
     ];
 
@@ -128,7 +130,7 @@ export function StealthShellRoot() {
       batcher.dispose();
       void Promise.all(unlisteners).then((listeners) => listeners.forEach((unlisten) => unlisten()));
     };
-  }, [applyBuildThreadBatch, clearBuildOverlayActivity, refreshWorkspaces]);
+  }, [applyBuildThreadActivity, applyBuildThreadBatch, clearBuildOverlayActivity, refreshWorkspaces]);
 
   useEffect(() => {
     refreshWorkspaces();
@@ -179,7 +181,7 @@ export function StealthShellRoot() {
       ) : null}
       <BuildOverlay
         state={shellState}
-        activity={getBuildOverlayViewModel(shellState, activeBuildThread, latestBuildEntry, t)}
+        activity={getBuildOverlayViewModel(shellState, activeBuildThread, null, t, latestBuildActivity)}
       />
     </main>
   );

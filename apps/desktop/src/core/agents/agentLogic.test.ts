@@ -8,11 +8,15 @@ import {
   formatAgentInteractionMode,
   formatAgentInteractionModeDetail,
   formatDiscoveredAgentStatus,
+  getAgentDisplayLabel,
   getAgentStatusLine,
   getAgentInteractionModes,
   getDefaultAgentInteractionMode,
   getSelectableAgents,
   getSelectedAgentId,
+  getSettingsAgentInstallStatuses,
+  getSettingsAgents,
+  getSettingsDiscoveredAgents,
   normalizeAgentInteractionMode,
   sortAgents,
 } from "./agentLogic";
@@ -113,12 +117,12 @@ test("discoverableAgentsToAdd hides configured agents", () => {
   );
 });
 
-test("Sofvary Pi defaults to built-in native mode only", () => {
+test("built-in Sofvary Agent defaults to native mode only and uses product-facing label", () => {
   const piAgent: AgentConfig = {
     ...baseAgent,
     id: "sofvary-pi",
     provider: "sofvary-pi",
-    label: "Sofvary Pi",
+    label: "Legacy Built-in Agent",
     acp: null,
     cli: { executable: "pi", args: [], env: {}, source: "bundled" },
   };
@@ -126,13 +130,71 @@ test("Sofvary Pi defaults to built-in native mode only", () => {
   assert.deepEqual(getAgentInteractionModes(piAgent), ["pi-native"]);
   assert.equal(getDefaultAgentInteractionMode(piAgent), "pi-native");
   assert.equal(normalizeAgentInteractionMode(piAgent, "workspace-handoff"), "pi-native");
+  assert.equal(getAgentDisplayLabel(piAgent), "Sofvary Agent");
+  assert.equal(getAgentStatusLine(piAgent), "Built-in");
+  assert.equal(formatAgentInteractionMode("pi-native"), "Built-in");
 });
 
-test("third-party agents expose managed and handoff modes", () => {
-  assert.deepEqual(getAgentInteractionModes(baseAgent), ["third-party-managed", "workspace-handoff"]);
-  assert.equal(getDefaultAgentInteractionMode(baseAgent), "third-party-managed");
+test("settings filters out built-in Sofvary Agent from third-party agent management", () => {
+  const piAgent: AgentConfig = {
+    ...baseAgent,
+    id: "sofvary-pi",
+    provider: "sofvary-pi",
+    label: "Legacy Built-in Agent",
+    acp: null,
+    cli: null,
+  };
+  const state: AgentConfigState = {
+    defaultAgentId: "sofvary-pi",
+    agents: [piAgent, baseAgent],
+  };
+
+  assert.deepEqual(getSettingsAgents(state).map((agent) => agent.id), ["codex"]);
+  assert.deepEqual(
+    getSettingsDiscoveredAgents([
+      { config: piAgent, detected: true, status: "built-in" },
+      { config: baseAgent, detected: true, status: "found" },
+    ]).map((agent) => agent.config.id),
+    ["codex"],
+  );
+  assert.deepEqual(
+    getSettingsAgentInstallStatuses([
+      {
+        catalog: {
+          id: "sofvary-pi",
+          label: "Legacy Built-in Agent",
+          iconKey: "sofvary-pi",
+          provider: "sofvary-pi",
+          docsUrl: "https://example.com",
+          installCapability: "unavailable",
+          recommended: true,
+          managed: false,
+          supported: true,
+          detectCommands: [],
+          acp: null,
+          cli: null,
+        },
+        configured: piAgent,
+        detected: true,
+        source: "bundled",
+        executable: null,
+        version: null,
+        installState: "installed",
+        detail: "Built in.",
+        lastTest: null,
+        lastInstall: null,
+      },
+    ]).map((status) => status.catalog.id),
+    [],
+  );
+});
+
+test("third-party agents expose terminal and handoff modes", () => {
+  assert.deepEqual(getAgentInteractionModes(baseAgent), ["third-party-terminal", "workspace-handoff"]);
+  assert.equal(getDefaultAgentInteractionMode(baseAgent), "third-party-terminal");
   assert.equal(normalizeAgentInteractionMode(baseAgent, "workspace-handoff"), "workspace-handoff");
-  assert.equal(normalizeAgentInteractionMode(baseAgent, "pi-native"), "third-party-managed");
+  assert.equal(normalizeAgentInteractionMode(baseAgent, "pi-native"), "third-party-terminal");
+  assert.equal(normalizeAgentInteractionMode(baseAgent, "third-party-managed"), "third-party-terminal");
 });
 
 test("third-party default interaction mode is honored when configured", () => {

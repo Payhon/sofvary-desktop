@@ -30,8 +30,12 @@ export type AgentProvider =
   | "deepseek-tui"
   | "sofvary-pi"
   | "custom";
-export type AgentTransportKind = "acp" | "cli" | "pi-rpc" | "workspace-handoff";
-export type AgentInteractionMode = "pi-native" | "third-party-managed" | "workspace-handoff";
+export type AgentTransportKind = "acp" | "cli" | "pi-native" | "pi-rpc" | "terminal" | "workspace-handoff";
+export type AgentInteractionMode =
+  | "pi-native"
+  | "third-party-managed"
+  | "third-party-terminal"
+  | "workspace-handoff";
 export type AgentInstallSource =
   | "bundled"
   | "dev-override"
@@ -296,6 +300,14 @@ export interface HandoffPromptCopyResult {
 
 export interface HandoffActionResult {
   thread: BuildThreadSummary;
+  terminalSessionId?: string | null;
+}
+
+export interface AgentTerminalOutputEvent {
+  sessionId: string;
+  threadId: string;
+  agentId: string;
+  text: string;
 }
 
 export interface HandoffFileState {
@@ -332,6 +344,22 @@ export interface BuildThreadEntry {
 export interface BuildThreadDetail {
   summary: BuildThreadSummary;
   entries: BuildThreadEntry[];
+}
+
+export interface BuildThreadActivityEvent {
+  threadId: string;
+  timestamp: string;
+  agentId: string;
+  transport: AgentTransportKind;
+  eventType: GatewayUniEventType;
+  phase: string;
+  safeSummary: string;
+  counts: {
+    coalesced: number;
+    sequence: number;
+  };
+  latestWarning?: string | null;
+  latestError?: string | null;
 }
 
 export type GatewayUniEventType =

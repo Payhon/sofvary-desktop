@@ -2,6 +2,7 @@ import type {
   AgentConfig,
   AgentConfigState,
   AgentInteractionMode,
+  AgentInstallStatus,
   AgentTestRecord,
   DiscoveredAgent,
 } from "../../types";
@@ -20,6 +21,27 @@ export function sortAgents(agents: AgentConfig[], defaultAgentId?: string | null
   });
 }
 
+export function isBuiltInSofvaryAgent(agent: Pick<AgentConfig, "id" | "provider"> | null | undefined): boolean {
+  return agent?.provider === "sofvary-pi" || agent?.id === "sofvary-pi";
+}
+
+export function getAgentDisplayLabel(agent: Pick<AgentConfig, "id" | "provider" | "label"> | null | undefined): string {
+  if (isBuiltInSofvaryAgent(agent)) return "Sofvary Agent";
+  return agent?.label ?? "";
+}
+
+export function getSettingsAgents(state: AgentConfigState): AgentConfig[] {
+  return sortAgents(state.agents, state.defaultAgentId).filter((agent) => !isBuiltInSofvaryAgent(agent));
+}
+
+export function getSettingsAgentInstallStatuses(statuses: AgentInstallStatus[]): AgentInstallStatus[] {
+  return statuses.filter((status) => status.catalog.id !== "sofvary-pi" && status.catalog.provider !== "sofvary-pi");
+}
+
+export function getSettingsDiscoveredAgents(discovered: DiscoveredAgent[]): DiscoveredAgent[] {
+  return discovered.filter((agent) => !isBuiltInSofvaryAgent(agent.config));
+}
+
 export function getDefaultAgent(state: AgentConfigState): AgentConfig | null {
   return state.agents.find((agent) => agent.id === state.defaultAgentId) ?? null;
 }
@@ -31,20 +53,22 @@ export function getSelectableAgents(state: AgentConfigState): AgentConfig[] {
 export function isAgentReady(agent: AgentConfig): boolean {
   return (
     agent.enabled &&
-    Boolean(agent.acp || (agent.provider === "sofvary-pi" && agent.cli) || (agent.allowCliFallback && agent.cli))
+    Boolean(agent.provider === "sofvary-pi" || agent.acp || agent.cli)
   );
 }
 
 export function getAgentInteractionModes(agent: AgentConfig | null): AgentInteractionMode[] {
   if (!agent) return ["pi-native"];
   if (agent.provider === "sofvary-pi") return ["pi-native"];
-  return ["third-party-managed", "workspace-handoff"];
+  return ["third-party-terminal", "workspace-handoff"];
 }
 
 export function getDefaultAgentInteractionMode(agent: AgentConfig | null): AgentInteractionMode {
   const modes = getAgentInteractionModes(agent);
-  if (agent?.defaultInteractionMode && modes.includes(agent.defaultInteractionMode)) {
-    return agent.defaultInteractionMode;
+  const defaultMode =
+    agent?.defaultInteractionMode === "third-party-managed" ? "third-party-terminal" : agent?.defaultInteractionMode;
+  if (defaultMode && modes.includes(defaultMode)) {
+    return defaultMode;
   }
   return modes[0] ?? "pi-native";
 }
@@ -54,8 +78,9 @@ export function normalizeAgentInteractionMode(
   requestedMode?: AgentInteractionMode | null,
 ): AgentInteractionMode {
   const modes = getAgentInteractionModes(agent);
-  if (requestedMode && modes.includes(requestedMode)) {
-    return requestedMode;
+  const normalizedMode = requestedMode === "third-party-managed" ? "third-party-terminal" : requestedMode;
+  if (normalizedMode && modes.includes(normalizedMode)) {
+    return normalizedMode;
   }
   return getDefaultAgentInteractionMode(agent);
 }
@@ -86,6 +111,7 @@ export function getSelectedAgentId(
 
 export function getAgentStatusLine(agent: AgentConfig | null, t: Translator = fallbackAgentT): string {
   if (!agent) return t("agent.status.notConfigured");
+  if (isBuiltInSofvaryAgent(agent)) return t("agent.status.builtIn");
   if (!isAgentReady(agent)) return t("agent.status.disabled");
   if (!agent.lastTest) return t("agent.test.untested");
   return formatAgentTestRecord(agent.lastTest, t);
@@ -132,6 +158,7 @@ function fallbackAgentT(
 ): string {
   const fallback: Record<string, string> = {
     "agent.status.notConfigured": "Agent is not configured",
+    "agent.status.builtIn": "Built-in",
     "agent.status.disabled": "Agent is disabled",
     "agent.test.untested": "Untested",
     "agent.test.communicationOk": "{transport} communication OK",
@@ -139,10 +166,12 @@ function fallbackAgentT(
     "agent.discovered.acp": "ACP available via {path}",
     "agent.discovered.cli": "CLI fallback available via {path}",
     "agent.discovered.notFound": "Not found on this machine",
-    "agentMode.pi-native": "Pi Native",
-    "agentMode.pi-native.detail": "Sofvary Pi runs through the built-in Gateway.",
+    "agentMode.pi-native": "Built-in",
+    "agentMode.pi-native.detail": "Sofvary Agent runs through the built-in Gateway.",
     "agentMode.third-party-managed": "Agent managed",
     "agentMode.third-party-managed.detail": "Use the Agent's ACP or CLI adapter directly.",
+    "agentMode.third-party-terminal": "Agent terminal",
+    "agentMode.third-party-terminal.detail": "Run the Agent in a Sofvary terminal inside the prepared workspace.",
     "agentMode.workspace-handoff": "Workspace handoff",
     "agentMode.workspace-handoff.detail": "Prepare a bounded workspace for an external Agent.",
   };

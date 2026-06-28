@@ -1,13 +1,15 @@
 use crate::core::agent_cli_bridge::parse_agent_file_output;
-use crate::core::agent_config::AgentCommandConfig;
+use crate::core::agent_config::{AgentCommandConfig, PiNativeProviderConfig};
 use crate::core::agent_gateway::{
-    AgentEvent, AgentEventSink, AgentFileWriteRequest, AgentGatewayError, AgentLiveFileSink,
+    AgentAdapter, AgentEvent, AgentEventSink, AgentFileWriteRequest, AgentGatewayError,
+    AgentLiveFileSink, MockAgentAdapter,
 };
 use crate::core::gateway_uni_event::{GatewayUniEventEmitter, GatewayUniEventType};
 use crate::core::harness_engine::PromptEnvelope;
 use crate::core::runtime_diagnostic::RuntimeDiagnostic;
-use crate::platform::stdio::StdioJsonRpcProcess;
+use crate::platform::stdio::{StdioJsonRpcProcess, StdioLine, StdioLineProcess};
 use crate::platform::CommandSpec;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
@@ -16,7 +18,7 @@ use std::process::ExitStatus;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use uuid::Uuid;
 
-const DEFAULT_PI_TIMEOUT_MS: u64 = 180_000;
+const DEFAULT_PI_TIMEOUT_MS: u64 = 600_000;
 const MAX_PI_MANAGED_STREAM_MS: u64 = 30 * 60 * 1000;
 const MAX_PI_STREAM_CHARS: usize = 240_000;
 const PI_READ_POLL_MS: u64 = 1_000;
@@ -26,7 +28,8 @@ const PI_STAGED_FILE_SETTLE_MS: u64 = 1_000;
 
 #[derive(Clone)]
 pub struct PiRunRequest<'a> {
-    pub command: &'a AgentCommandConfig,
+    pub command: Option<&'a AgentCommandConfig>,
+    pub pi_native_provider: Option<&'a PiNativeProviderConfig>,
     pub workspace_root: &'a Path,
     pub staging_root: &'a Path,
     pub envelope: &'a PromptEnvelope,
@@ -44,16 +47,493 @@ pub struct PiRunOutput {
     pub file_writes: Vec<AgentFileWriteRequest>,
 }
 
+fn run_builtin_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatewayError> {
+    let prompt_id = format!("prompt_{}", Uuid::new_v4());
+    let mut events = Vec::new();
+    if let Some(gateway_events) = &request.gateway_events {
+        gateway_events.session_started("Sofvary Agent");
+        gateway_events.turn_started(prompt_id);
+        gateway_events.status("pi-native", "Using built-in Sofvary Agent runtime");
+        gateway_events.emit(
+            GatewayUniEventType::ToolStarted,
+            json!({
+                "toolName": "sofvary_agent.generate",
+                "status": "running",
+                "summary": "Generating assets through Sofvary-managed Agent tools"
+            }),
+        );
+    }
+
+    record_pi_event(
+        &mut events,
+        request.event_sink.as_ref(),
+        AgentEvent::Planning {
+            message: "Using built-in Sofvary Agent runtime".to_string(),
+        },
+    );
+    let output = MockAgentAdapter.generate(request.envelope)?;
+    for event in &output.events {
+        match event {
+            AgentEvent::Planning { message } => {
+                if let Some(gateway_events) = &request.gateway_events {
+                    gateway_events.status("planning", message.clone());
+                }
+            }
+            AgentEvent::TextDelta { text } => {
+                if let Some(gateway_events) = &request.gateway_events {
+                    gateway_events.message_delta(text.clone());
+                }
+            }
+            _ => {}
+        }
+        record_pi_event(&mut events, request.event_sink.as_ref(), event.clone());
+    }
+
+    for file in &output.file_writes {
+        if let Some(gateway_events) = &request.gateway_events {
+            gateway_events.emit(
+                GatewayUniEventType::FileWriteRequested,
+                json!({ "path": &file.relative_path, "source": "pi-native" }),
+            );
+        }
+        if let Some(live_file_sink) = &request.live_file_sink {
+            live_file_sink(file.clone())?;
+        }
+        if let Some(gateway_events) = &request.gateway_events {
+            gateway_events.emit(
+                GatewayUniEventType::FileWritten,
+                json!({ "path": &file.relative_path, "source": "pi-native" }),
+            );
+        }
+    }
+
+    if let Some(gateway_events) = &request.gateway_events {
+        gateway_events.emit(
+            GatewayUniEventType::ToolCompleted,
+            json!({
+                "toolName": "sofvary_agent.generate",
+                "status": "ok",
+                "fileCount": output.file_writes.len()
+            }),
+        );
+        gateway_events.turn_completed("ok");
+    }
+
+    Ok(PiRunOutput {
+        events,
+        file_writes: output.file_writes,
+    })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PiWorkerRequest<'a> {
+    thread_id: &'a str,
+    workspace_root: String,
+    staging_root: String,
+    envelope: &'a PromptEnvelope,
+    diagnostics: &'a [RuntimeDiagnostic],
+    provider: PiWorkerProvider<'a>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PiWorkerProvider<'a> {
+    provider: &'a str,
+    model: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_url: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_key: Option<&'a str>,
+}
+
+fn maybe_dump_pi_worker_request(request: &PiWorkerRequest<'_>) -> Result<(), AgentGatewayError> {
+    let Some(debug_dir) = std::env::var_os("SOFVARY_PI_WORKER_DEBUG_DIR") else {
+        return Ok(());
+    };
+    let debug_dir = PathBuf::from(debug_dir);
+    fs::create_dir_all(&debug_dir).map_err(|error| {
+        AgentGatewayError::Adapter(format!(
+            "failed to create Pi worker debug dir {}: {error}",
+            debug_dir.display()
+        ))
+    })?;
+    let mut value = serde_json::to_value(request)
+        .map_err(|error| AgentGatewayError::Adapter(error.to_string()))?;
+    if let Some(provider) = value.get_mut("provider").and_then(Value::as_object_mut) {
+        if provider.contains_key("apiKey") {
+            provider.insert(
+                "apiKey".to_string(),
+                Value::String("[redacted]".to_string()),
+            );
+        }
+    }
+    let filename = format!("{}-pi-worker-request.json", request.thread_id);
+    let path = debug_dir.join(filename);
+    let content = serde_json::to_string_pretty(&value)
+        .map_err(|error| AgentGatewayError::Adapter(error.to_string()))?;
+    fs::write(&path, content).map_err(|error| {
+        AgentGatewayError::Adapter(format!(
+            "failed to write Pi worker debug request {}: {error}",
+            path.display()
+        ))
+    })?;
+    Ok(())
+}
+
+fn write_pi_worker_request_file(
+    request: &PiWorkerRequest<'_>,
+    workspace_root: &Path,
+) -> Result<PathBuf, AgentGatewayError> {
+    let request_dir = workspace_root.join("runtime");
+    fs::create_dir_all(&request_dir).map_err(|error| {
+        AgentGatewayError::Adapter(format!(
+            "failed to create Pi worker request dir {}: {error}",
+            request_dir.display()
+        ))
+    })?;
+    let path = request_dir.join(format!("sofvary-pi-worker-request-{}.json", Uuid::new_v4()));
+    let content = serde_json::to_vec(request)
+        .map_err(|error| AgentGatewayError::Adapter(error.to_string()))?;
+    fs::write(&path, content).map_err(|error| {
+        AgentGatewayError::Adapter(format!(
+            "failed to write Pi worker request file {}: {error}",
+            path.display()
+        ))
+    })?;
+    Ok(path)
+}
+
+fn trace_pi_worker(message: impl AsRef<str>) {
+    if std::env::var_os("SOFVARY_PI_WORKER_TRACE").is_some() {
+        eprintln!("[sofvary-pi-worker] {}", message.as_ref());
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct PiWorkerEvent {
+    #[serde(rename = "type")]
+    event_type: String,
+    #[serde(default)]
+    payload: Value,
+}
+
+fn run_pi_sdk_worker(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatewayError> {
+    let provider = request.pi_native_provider.ok_or_else(|| {
+        AgentGatewayError::Adapter(
+            "Sofvary Agent requires a configured LLM Provider before it can run.".to_string(),
+        )
+    })?;
+    fs::create_dir_all(request.staging_root).map_err(|error| {
+        AgentGatewayError::Adapter(format!("failed to create Agent staging root: {error}"))
+    })?;
+
+    let prompt_id = format!("prompt_{}", Uuid::new_v4());
+    let worker_request = PiWorkerRequest {
+        thread_id: request.thread_id,
+        workspace_root: request.workspace_root.display().to_string(),
+        staging_root: request.staging_root.display().to_string(),
+        envelope: request.envelope,
+        diagnostics: request.diagnostics,
+        provider: PiWorkerProvider {
+            provider: &provider.provider,
+            model: &provider.model,
+            base_url: provider.base_url.as_deref(),
+            api_key: None,
+        },
+    };
+    maybe_dump_pi_worker_request(&worker_request)?;
+    let request_file = write_pi_worker_request_file(&worker_request, request.workspace_root)?;
+    trace_pi_worker(format!("request file ready: {}", request_file.display()));
+
+    let timeout_ms = if request.timeout_ms == 0 {
+        DEFAULT_PI_TIMEOUT_MS
+    } else {
+        request.timeout_ms
+    };
+    let repo_root = sofvary_repo_root()?;
+    let pi_agent_root = repo_root.join("packages").join("sofvary-pi-agent");
+    let worker_path = pi_agent_root.join("dist").join("worker.js");
+    if !worker_path.exists() {
+        return Err(AgentGatewayError::Adapter(format!(
+            "Sofvary Agent worker was not found at {}. Run pnpm --filter @sofvary/pi-agent build.",
+            worker_path.display()
+        )));
+    }
+    let mut env = HashMap::new();
+    env.insert(
+        "SOFVARY_PI_WORKER_REQUEST_FILE".to_string(),
+        request_file.display().to_string(),
+    );
+    if std::env::var_os("SOFVARY_PI_WORKER_TRACE").is_some() {
+        let stage_file = request_file.with_extension("stage.log");
+        env.insert(
+            "SOFVARY_PI_WORKER_STAGE_FILE".to_string(),
+            stage_file.display().to_string(),
+        );
+        trace_pi_worker(format!("stage file ready: {}", stage_file.display()));
+    }
+    if let Some(api_key) = &provider.api_key {
+        env.insert("SOFVARY_PI_API_KEY".to_string(), api_key.clone());
+    }
+    trace_pi_worker("spawning node worker");
+    let mut process = StdioLineProcess::spawn(&CommandSpec {
+        executable: PathBuf::from("node"),
+        args: vec![worker_path.display().to_string()],
+        cwd: repo_root.clone(),
+        env,
+        allowed_network: true,
+        timeout_ms: Some(timeout_ms),
+        kill_on_drop: true,
+    })
+    .map_err(|error| {
+        let _ = fs::remove_file(&request_file);
+        AgentGatewayError::Adapter(format!("failed to start Sofvary Agent worker: {error}"))
+    })?;
+    trace_pi_worker("node worker spawned");
+
+    let timeout = Duration::from_millis(timeout_ms);
+    let read_poll = Duration::from_millis(timeout_ms.min(PI_READ_POLL_MS).max(1));
+    let started_at = Instant::now();
+    let mut last_progress_at = started_at;
+    let mut staged_progress = StagedFileProgress::new(
+        request.staging_root,
+        &request.envelope.output_contract.files,
+    );
+    let mut file_writes = Vec::new();
+    let mut events = Vec::new();
+    let mut text = String::new();
+    let mut pending_gateway_text = String::new();
+    let mut last_gateway_delta_flush = Instant::now();
+    let mut turn_completed_emitted = false;
+    let mut ended_after_files_ready = false;
+
+    loop {
+        let line = process.read_line_timeout(read_poll).map_err(|error| {
+            AgentGatewayError::Adapter(format!("Sofvary Agent worker read failed: {error}"))
+        })?;
+        match line {
+            Some(StdioLine::Stdout(line)) => {
+                last_progress_at = Instant::now();
+                if let Ok(event) = serde_json::from_str::<PiWorkerEvent>(&line) {
+                    trace_pi_worker(format!("stdout event: {}", event.event_type));
+                } else {
+                    trace_pi_worker("stdout non-json line");
+                }
+                handle_pi_worker_stdout_line(
+                    &line,
+                    &prompt_id,
+                    request.gateway_events.as_ref(),
+                    &mut events,
+                    request.event_sink.as_ref(),
+                    &mut text,
+                    &mut pending_gateway_text,
+                    &mut last_gateway_delta_flush,
+                    &mut turn_completed_emitted,
+                )?;
+            }
+            Some(StdioLine::Stderr(line)) => {
+                if !line.trim().is_empty() {
+                    last_progress_at = Instant::now();
+                    if let Some(gateway_events) = &request.gateway_events {
+                        gateway_events.terminal_output("stderr", line.clone());
+                    }
+                    record_pi_event(
+                        &mut events,
+                        request.event_sink.as_ref(),
+                        AgentEvent::Planning {
+                            message: format!("Sofvary Agent worker stderr: {line}"),
+                        },
+                    );
+                }
+            }
+            None => {
+                if sync_ready_staged_files(
+                    &mut staged_progress,
+                    &mut file_writes,
+                    request.live_file_sink.as_ref(),
+                    &mut events,
+                    request.event_sink.as_ref(),
+                    request.gateway_events.as_ref(),
+                    Instant::now(),
+                )? {
+                    trace_pi_worker(format!("synced files: {}", file_writes.len()));
+                    last_progress_at = Instant::now();
+                }
+                if staged_progress.all_required_files_synced() {
+                    trace_pi_worker("all required files synced from idle branch");
+                    flush_pi_gateway_delta(
+                        request.gateway_events.as_ref(),
+                        &mut pending_gateway_text,
+                    );
+                    if let Some(gateway_events) = &request.gateway_events {
+                        gateway_events.status(
+                            "files-ready",
+                            format!(
+                                "Detected {} stable generated files from Sofvary Agent worker; ending the agent turn and starting preview.",
+                                request.envelope.output_contract.files.len()
+                            ),
+                        );
+                        gateway_events.turn_completed("ok");
+                    }
+                    turn_completed_emitted = true;
+                    ended_after_files_ready = true;
+                    process.kill();
+                    break;
+                }
+                if process
+                    .try_wait()
+                    .map_err(|error| {
+                        AgentGatewayError::Adapter(format!(
+                            "Sofvary Agent worker status check failed: {error}"
+                        ))
+                    })?
+                    .is_some()
+                {
+                    trace_pi_worker("node worker exited");
+                    break;
+                }
+                if last_progress_at.elapsed() >= timeout {
+                    process.kill();
+                    let _ = fs::remove_file(&request_file);
+                    return Err(AgentGatewayError::Adapter(format!(
+                        "Sofvary Agent worker timed out after {timeout_ms}ms"
+                    )));
+                }
+            }
+        }
+
+        if sync_ready_staged_files(
+            &mut staged_progress,
+            &mut file_writes,
+            request.live_file_sink.as_ref(),
+            &mut events,
+            request.event_sink.as_ref(),
+            request.gateway_events.as_ref(),
+            Instant::now(),
+        )? {
+            trace_pi_worker(format!("synced files: {}", file_writes.len()));
+            last_progress_at = Instant::now();
+        }
+        if staged_progress.all_required_files_synced() {
+            trace_pi_worker("all required files synced from active branch");
+            flush_pi_gateway_delta(request.gateway_events.as_ref(), &mut pending_gateway_text);
+            if let Some(gateway_events) = &request.gateway_events {
+                gateway_events.status(
+                    "files-ready",
+                    format!(
+                        "Detected {} stable generated files from Sofvary Agent worker; ending the agent turn and starting preview.",
+                        request.envelope.output_contract.files.len()
+                    ),
+                );
+                gateway_events.turn_completed("ok");
+            }
+            turn_completed_emitted = true;
+            ended_after_files_ready = true;
+            process.kill();
+            break;
+        }
+        enforce_pi_stream_limits(started_at, text.chars().count())?;
+    }
+    let _ = fs::remove_file(&request_file);
+
+    let final_status = if ended_after_files_ready {
+        let _ = process.try_wait();
+        None
+    } else {
+        process.try_wait().map_err(|error| {
+            AgentGatewayError::Adapter(format!("Sofvary Agent worker status check failed: {error}"))
+        })?
+    };
+    let final_staged_files = collect_staged_files(
+        request.staging_root,
+        &request.envelope.output_contract.files,
+    )?;
+    merge_file_writes(&mut file_writes, final_staged_files);
+    if file_writes.is_empty() && !text.trim().is_empty() {
+        file_writes = parse_agent_file_output(
+            &text,
+            &request.envelope.output_contract.files,
+            "Sofvary Agent worker",
+        )?;
+    }
+    file_writes.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+
+    flush_pi_gateway_delta(request.gateway_events.as_ref(), &mut pending_gateway_text);
+    if !turn_completed_emitted {
+        if let Some(gateway_events) = &request.gateway_events {
+            gateway_events.turn_completed(if file_writes.is_empty() {
+                "incomplete"
+            } else {
+                "ok"
+            });
+        }
+    }
+    if let Some(status) = final_status {
+        if !status.success() {
+            if let Some(gateway_events) = &request.gateway_events {
+                gateway_events.error(format!("Sofvary Agent worker exited with status {status}"));
+            }
+            return Err(AgentGatewayError::Adapter(format!(
+                "Sofvary Agent worker exited with status {status}"
+            )));
+        }
+    }
+    record_pi_event(
+        &mut events,
+        request.event_sink.as_ref(),
+        AgentEvent::Planning {
+            message: format!(
+                "Sofvary Agent worker returned {} output files",
+                file_writes.len()
+            ),
+        },
+    );
+    if let Some(gateway_events) = &request.gateway_events {
+        for file in &file_writes {
+            if staged_progress.synced.contains_key(&file.relative_path) {
+                continue;
+            }
+            gateway_events.emit(
+                GatewayUniEventType::FileWriteRequested,
+                json!({
+                    "path": &file.relative_path,
+                    "source": "sofvary-agent-final",
+                    "bytes": file.contents.len()
+                }),
+            );
+            gateway_events.emit(
+                GatewayUniEventType::FileWritten,
+                json!({
+                    "path": &file.relative_path,
+                    "source": "sofvary-agent-final"
+                }),
+            );
+        }
+    }
+    Ok(PiRunOutput {
+        events,
+        file_writes,
+    })
+}
+
 pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatewayError> {
     if !request.staging_root.starts_with(request.workspace_root) {
         return Err(AgentGatewayError::Adapter(format!(
-            "Pi staging root escapes workspace: {}",
+            "Agent staging root escapes workspace: {}",
             request.staging_root.display()
         )));
     }
 
+    let Some(command) = request.command else {
+        if std::env::var_os("SOFVARY_PI_NATIVE_LEGACY_MOCK").is_some() {
+            return run_builtin_pi_agent(request);
+        }
+        return run_pi_sdk_worker(request);
+    };
+
     fs::create_dir_all(request.staging_root).map_err(|error| {
-        AgentGatewayError::Adapter(format!("failed to create Pi staging root: {error}"))
+        AgentGatewayError::Adapter(format!("failed to create Agent staging root: {error}"))
     })?;
     let timeout_ms = if request.timeout_ms == 0 {
         DEFAULT_PI_TIMEOUT_MS
@@ -61,29 +541,31 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
         request.timeout_ms
     };
     let mut process = StdioJsonRpcProcess::spawn(&CommandSpec {
-        executable: request.command.executable.clone(),
-        args: request.command.args.clone(),
+        executable: command.executable.clone(),
+        args: command.args.clone(),
         cwd: request.staging_root.to_path_buf(),
-        env: request.command.env.clone(),
+        env: command.env.clone(),
         allowed_network: false,
         timeout_ms: Some(timeout_ms),
         kill_on_drop: true,
     })
     .map_err(|error| {
-        AgentGatewayError::Adapter(format!("failed to start Pi RPC agent: {error}"))
+        AgentGatewayError::Adapter(format!(
+            "failed to start Sofvary Agent RPC process: {error}"
+        ))
     })?;
 
     let prompt_id = format!("prompt_{}", Uuid::new_v4());
     let prompt = build_pi_prompt(request.envelope, request.staging_root, request.diagnostics);
     if let Some(events) = &request.gateway_events {
-        events.session_started("Sofvary Pi");
+        events.session_started("Sofvary Agent");
         events.turn_started(prompt_id.clone());
-        events.status("connecting", "Starting Sofvary Pi RPC harness");
+        events.status("connecting", "Starting Sofvary Agent RPC harness");
         if !request.diagnostics.is_empty() {
             events.status(
                 "repair-context",
                 format!(
-                    "Passing {} runtime diagnostics to Sofvary Pi for repair.",
+                    "Passing {} runtime diagnostics to Sofvary Agent for repair.",
                     request.diagnostics.len()
                 ),
             );
@@ -91,9 +573,9 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
         events.emit(
             GatewayUniEventType::ToolStarted,
             json!({
-                "toolName": "pi.prompt",
+                "toolName": "sofvary_agent.prompt",
                 "status": "running",
-                "summary": "Sending constrained PromptEnvelope to Sofvary Pi"
+                "summary": "Sending constrained PromptEnvelope to Sofvary Agent"
             }),
         );
     }
@@ -104,14 +586,14 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
         "threadId": request.thread_id
     }))
     .map_err(|error| AgentGatewayError::Adapter(error.to_string()))?;
-    process
-        .write_line(&line)
-        .map_err(|error| AgentGatewayError::Adapter(format!("Pi RPC write failed: {error}")))?;
+    process.write_line(&line).map_err(|error| {
+        AgentGatewayError::Adapter(format!("Sofvary Agent RPC write failed: {error}"))
+    })?;
     if let Some(events) = &request.gateway_events {
         events.emit(
             GatewayUniEventType::ToolCompleted,
             json!({
-                "toolName": "pi.prompt",
+                "toolName": "sofvary_agent.prompt",
                 "status": "ok",
                 "summary": "PromptEnvelope delivered"
             }),
@@ -143,16 +625,15 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
         &mut events,
         request.event_sink.as_ref(),
         AgentEvent::Planning {
-            message: "Started Sofvary Pi RPC harness".to_string(),
+            message: "Started Sofvary Agent RPC harness".to_string(),
         },
     );
     let timeout = Duration::from_millis(timeout_ms);
     let read_poll = Duration::from_millis(timeout_ms.min(PI_READ_POLL_MS).max(1));
     loop {
-        let line = match process
-            .read_line_timeout(read_poll)
-            .map_err(|error| AgentGatewayError::Adapter(format!("Pi RPC read failed: {error}")))?
-        {
+        let line = match process.read_line_timeout(read_poll).map_err(|error| {
+            AgentGatewayError::Adapter(format!("Sofvary Agent RPC read failed: {error}"))
+        })? {
             Some(line) => line,
             None => {
                 if sync_ready_staged_files(
@@ -175,7 +656,7 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
                         gateway_events.status(
                             "files-ready",
                             format!(
-                                "Detected {} stable generated files from Pi; ending the slow text stream and starting preview.",
+                                "Detected {} stable generated files from Sofvary Agent; ending the slow text stream and starting preview.",
                                 request.envelope.output_contract.files.len()
                             ),
                         );
@@ -188,7 +669,9 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
                 if process
                     .try_wait()
                     .map_err(|error| {
-                        AgentGatewayError::Adapter(format!("Pi RPC status check failed: {error}"))
+                        AgentGatewayError::Adapter(format!(
+                            "Sofvary Agent RPC status check failed: {error}"
+                        ))
                     })?
                     .is_some()
                 {
@@ -216,7 +699,7 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
             }
         } else {
             let value: Value = serde_json::from_str(&line).map_err(|error| {
-                AgentGatewayError::Adapter(format!("invalid Pi RPC JSON: {error}"))
+                AgentGatewayError::Adapter(format!("invalid Sofvary Agent RPC JSON: {error}"))
             })?;
             if is_failed_pi_response(&value) {
                 if let Some(events) = &request.gateway_events {
@@ -229,7 +712,7 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
                     events.turn_completed("error");
                 }
                 return Err(AgentGatewayError::Adapter(format!(
-                    "Pi RPC command failed: {}",
+                    "Sofvary Agent RPC command failed: {}",
                     value
                         .get("error")
                         .and_then(Value::as_str)
@@ -242,7 +725,7 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
                     request.event_sink.as_ref(),
                     AgentEvent::Planning {
                         message:
-                            "Pi RPC requested UI input; Sofvary canceled it for this harness turn"
+                            "Sofvary Agent RPC requested UI input; Sofvary canceled it for this harness turn"
                                 .to_string(),
                     },
                 );
@@ -300,7 +783,7 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
                 gateway_events.status(
                     "files-ready",
                     format!(
-                        "Detected {} stable generated files from Pi; ending the slow text stream and starting preview.",
+                        "Detected {} stable generated files from Sofvary Agent; ending the slow text stream and starting preview.",
                         request.envelope.output_contract.files.len()
                     ),
                 );
@@ -327,7 +810,7 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
         file_writes = parse_agent_file_output(
             parse_source,
             &request.envelope.output_contract.files,
-            "Pi RPC agent",
+            "Sofvary Agent RPC",
         )?;
     }
     file_writes.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
@@ -345,7 +828,10 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
         &mut events,
         request.event_sink.as_ref(),
         AgentEvent::Planning {
-            message: format!("Pi RPC returned {} output files", file_writes.len()),
+            message: format!(
+                "Sofvary Agent RPC returned {} output files",
+                file_writes.len()
+            ),
         },
     );
     if let Some(gateway_events) = &request.gateway_events {
@@ -363,11 +849,11 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
             }
             gateway_events.emit(
                 GatewayUniEventType::FileWriteRequested,
-                json!({ "path": &file.relative_path, "source": "pi-rpc" }),
+                json!({ "path": &file.relative_path, "source": "sofvary-agent-rpc" }),
             );
             gateway_events.emit(
                 GatewayUniEventType::FileWritten,
-                json!({ "path": &file.relative_path, "source": "pi-rpc" }),
+                json!({ "path": &file.relative_path, "source": "sofvary-agent-rpc" }),
             );
         }
     }
@@ -376,6 +862,174 @@ pub fn run_pi_agent(request: PiRunRequest<'_>) -> Result<PiRunOutput, AgentGatew
         events,
         file_writes,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_pi_worker_stdout_line(
+    line: &str,
+    prompt_id: &str,
+    gateway_events: Option<&GatewayUniEventEmitter>,
+    events: &mut Vec<AgentEvent>,
+    event_sink: Option<&AgentEventSink>,
+    text: &mut String,
+    pending_gateway_text: &mut String,
+    last_gateway_delta_flush: &mut Instant,
+    turn_completed_emitted: &mut bool,
+) -> Result<(), AgentGatewayError> {
+    if line.trim().is_empty() {
+        return Ok(());
+    }
+    let event = serde_json::from_str::<PiWorkerEvent>(line).map_err(|error| {
+        AgentGatewayError::Adapter(format!(
+            "invalid Sofvary Agent worker JSON: {error}; line={line}"
+        ))
+    })?;
+    match event.event_type.as_str() {
+        "session.started" => {
+            if let Some(gateway_events) = gateway_events {
+                let label = event
+                    .payload
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Sofvary Agent");
+                gateway_events.session_started(label);
+            }
+            record_pi_event(
+                events,
+                event_sink,
+                AgentEvent::Planning {
+                    message: "Started Sofvary Agent worker".to_string(),
+                },
+            );
+        }
+        "turn.started" => {
+            if let Some(gateway_events) = gateway_events {
+                gateway_events.turn_started(prompt_id.to_string());
+            }
+        }
+        "message.delta" => {
+            let delta = event
+                .payload
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            text.push_str(delta);
+            emit_pi_text_delta(
+                events,
+                event_sink,
+                gateway_events,
+                pending_gateway_text,
+                last_gateway_delta_flush,
+                delta,
+                false,
+            );
+        }
+        "reasoning.delta" => {
+            if let Some(gateway_events) = gateway_events {
+                gateway_events.emit(GatewayUniEventType::ReasoningDelta, event.payload);
+            }
+        }
+        "tool.started" => {
+            if let Some(gateway_events) = gateway_events {
+                gateway_events.emit(GatewayUniEventType::ToolStarted, event.payload.clone());
+            }
+            if let Some(tool_name) = event.payload.get("toolName").and_then(Value::as_str) {
+                record_pi_event(
+                    events,
+                    event_sink,
+                    AgentEvent::Planning {
+                        message: format!("Sofvary Agent started tool {tool_name}"),
+                    },
+                );
+            }
+        }
+        "tool.delta" => {
+            if let Some(gateway_events) = gateway_events {
+                gateway_events.emit(GatewayUniEventType::ToolDelta, event.payload);
+            }
+        }
+        "tool.completed" => {
+            if let Some(gateway_events) = gateway_events {
+                gateway_events.emit(GatewayUniEventType::ToolCompleted, event.payload);
+            }
+        }
+        "file.write.requested" => {
+            if let Some(relative_path) = event.payload.get("path").and_then(Value::as_str) {
+                record_pi_event(
+                    events,
+                    event_sink,
+                    AgentEvent::FileWriteRequested {
+                        relative_path: relative_path.to_string(),
+                    },
+                );
+            }
+            if let Some(gateway_events) = gateway_events {
+                gateway_events.emit(GatewayUniEventType::FileWriteRequested, event.payload);
+            }
+        }
+        "file.written" => {
+            if let Some(relative_path) = event.payload.get("path").and_then(Value::as_str) {
+                record_pi_event(
+                    events,
+                    event_sink,
+                    AgentEvent::FileWritten {
+                        relative_path: relative_path.to_string(),
+                    },
+                );
+            }
+            if let Some(gateway_events) = gateway_events {
+                gateway_events.emit(GatewayUniEventType::FileWritten, event.payload);
+            }
+        }
+        "status.changed" => {
+            let status = event
+                .payload
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("pi-sdk");
+            let summary = event
+                .payload
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or(status);
+            if let Some(gateway_events) = gateway_events {
+                gateway_events.status(status, summary.to_string());
+            }
+            record_pi_event(
+                events,
+                event_sink,
+                AgentEvent::Planning {
+                    message: summary.to_string(),
+                },
+            );
+        }
+        "turn.completed" => {
+            flush_pi_gateway_delta(gateway_events, pending_gateway_text);
+            let status = event
+                .payload
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("ok");
+            if let Some(gateway_events) = gateway_events {
+                gateway_events.turn_completed(status);
+            }
+            *turn_completed_emitted = true;
+        }
+        "error" => {
+            let message = event
+                .payload
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Sofvary Agent worker failed");
+            if let Some(gateway_events) = gateway_events {
+                gateway_events.error(message);
+                gateway_events.turn_completed("error");
+            }
+            return Err(AgentGatewayError::Adapter(message.to_string()));
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn emit_pi_text_delta(
@@ -453,7 +1107,7 @@ fn sync_ready_staged_files(
                 GatewayUniEventType::FileWriteRequested,
                 json!({
                     "path": &file.relative_path,
-                    "source": "pi-rpc",
+                    "source": "sofvary-agent-rpc",
                     "mode": "live",
                     "bytes": file.contents.len()
                 }),
@@ -475,7 +1129,7 @@ fn sync_ready_staged_files(
                 GatewayUniEventType::FileWritten,
                 json!({
                     "path": &file.relative_path,
-                    "source": "pi-rpc",
+                    "source": "sofvary-agent-rpc",
                     "mode": "live"
                 }),
             );
@@ -511,13 +1165,13 @@ fn enforce_pi_stream_limits(
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
     if elapsed_ms > MAX_PI_MANAGED_STREAM_MS {
         return Err(AgentGatewayError::Adapter(format!(
-            "Pi RPC exceeded managed session limit after {} minutes without completing. Cancel this run or switch to Workspace Handoff for long native agent sessions.",
+            "Sofvary Agent exceeded managed session limit after {} minutes without completing. Cancel this run or switch to Workspace Handoff for long native agent sessions.",
             elapsed_ms / 60_000
         )));
     }
     if streamed_chars > MAX_PI_STREAM_CHARS {
         return Err(AgentGatewayError::Adapter(format!(
-            "Pi RPC streamed more than {} characters without completing. The output was not accepted as a finished app.",
+            "Sofvary Agent streamed more than {} characters without completing. The output was not accepted as a finished app.",
             MAX_PI_STREAM_CHARS
         )));
     }
@@ -536,6 +1190,21 @@ fn record_pi_event(
     }
 }
 
+fn sofvary_repo_root() -> Result<PathBuf, AgentGatewayError> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir
+        .ancestors()
+        .nth(3)
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            AgentGatewayError::Adapter(format!(
+                "failed to resolve Sofvary repo root from {}",
+                manifest_dir.display()
+            ))
+        })
+}
+
+#[allow(dead_code)]
 pub fn test_pi_agent(command: &AgentCommandConfig) -> Result<String, AgentGatewayError> {
     let mut args = command.args.clone();
     args.push("--help".to_string());
@@ -551,13 +1220,13 @@ pub fn test_pi_agent(command: &AgentCommandConfig) -> Result<String, AgentGatewa
             kill_on_drop: true,
         })
         .map_err(|error| {
-            AgentGatewayError::Adapter(format!("Pi RPC process test failed: {error}"))
+            AgentGatewayError::Adapter(format!("Sofvary Agent RPC process test failed: {error}"))
         })?;
     if output.status_code == Some(0) {
-        Ok("Pi RPC command is reachable".to_string())
+        Ok("Sofvary Agent RPC command is reachable".to_string())
     } else {
         Err(AgentGatewayError::Adapter(format!(
-            "Pi RPC command failed with {:?}: {}",
+            "Sofvary Agent RPC command failed with {:?}: {}",
             output.status_code,
             summarize_command_output(&output.stderr, &output.stdout)
         )))
@@ -569,16 +1238,16 @@ fn pi_no_output_error(process: &mut StdioJsonRpcProcess, timeout_ms: u64) -> Age
     let stderr_summary = summarize_text_for_error(&stderr);
     match process.try_wait() {
         Ok(Some(status)) => AgentGatewayError::Adapter(format!(
-            "Pi RPC agent exited before output with {}{}",
+            "Sofvary Agent RPC process exited before output with {}{}",
             exit_status_summary(status),
             stderr_suffix(&stderr_summary)
         )),
         Ok(None) => AgentGatewayError::Adapter(format!(
-            "Pi RPC agent timed out waiting for output after {timeout_ms} ms{}",
+            "Sofvary Agent RPC process timed out waiting for output after {timeout_ms} ms{}",
             stderr_suffix(&stderr_summary)
         )),
         Err(error) => AgentGatewayError::Adapter(format!(
-            "Pi RPC agent timed out waiting for output after {timeout_ms} ms; process status unavailable: {error}{}",
+            "Sofvary Agent RPC process timed out waiting for output after {timeout_ms} ms; process status unavailable: {error}{}",
             stderr_suffix(&stderr_summary)
         )),
     }
@@ -612,6 +1281,7 @@ fn stderr_suffix(stderr: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn summarize_command_output(stderr: &str, stdout: &str) -> String {
     let stderr = summarize_text_for_error(stderr);
     if !stderr.is_empty() {
@@ -702,7 +1372,7 @@ fn maybe_cancel_pi_ui_request(
             json!({
                 "approvalId": id,
                 "action": method,
-                "subject": "Pi RPC UI input",
+                "subject": "Sofvary Agent UI input",
                 "risks": ["Sofvary cancels interactive UI requests during this generation harness turn"]
             }),
         );
@@ -714,7 +1384,7 @@ fn maybe_cancel_pi_ui_request(
     }))
     .map_err(|error| AgentGatewayError::Adapter(error.to_string()))?;
     process.write_line(&line).map_err(|error| {
-        AgentGatewayError::Adapter(format!("Pi RPC UI response failed: {error}"))
+        AgentGatewayError::Adapter(format!("Sofvary Agent UI response failed: {error}"))
     })?;
     if let Some(events) = gateway_events {
         events.emit(
@@ -1001,6 +1671,8 @@ fn runtime_diagnostic_summary(diagnostics: &[RuntimeDiagnostic]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::agent_config::AgentTransportKind;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn pi_event_text_reads_common_shapes() {
@@ -1021,6 +1693,107 @@ mod tests {
             })),
             Some("c".to_string())
         );
+    }
+
+    #[test]
+    fn pi_worker_text_event_records_agent_delta_without_gateway() {
+        let mut events = Vec::new();
+        let mut text = String::new();
+        let mut pending_gateway_text = String::new();
+        let mut last_gateway_delta_flush = Instant::now();
+        let mut turn_completed = false;
+
+        handle_pi_worker_stdout_line(
+            r#"{"type":"message.delta","payload":{"text":"hello"}}"#,
+            "prompt_test",
+            None,
+            &mut events,
+            None,
+            &mut text,
+            &mut pending_gateway_text,
+            &mut last_gateway_delta_flush,
+            &mut turn_completed,
+        )
+        .expect("worker event");
+
+        assert_eq!(text, "hello");
+        assert!(matches!(
+            events.as_slice(),
+            [AgentEvent::TextDelta { text }] if text == "hello"
+        ));
+        assert!(!turn_completed);
+    }
+
+    #[test]
+    fn pi_worker_events_emit_gateway_uni_events() {
+        let captured_events = Arc::new(Mutex::new(Vec::new()));
+        let sink_events = Arc::clone(&captured_events);
+        let gateway_events = GatewayUniEventEmitter::new(
+            "thread_test",
+            "sofvary-pi",
+            AgentTransportKind::PiNative,
+            Arc::new(move |event| {
+                sink_events.lock().expect("events").push(event);
+            }),
+        );
+        let mut events = Vec::new();
+        let mut text = String::new();
+        let mut pending_gateway_text = String::new();
+        let mut last_gateway_delta_flush = Instant::now();
+        let mut turn_completed = false;
+
+        for line in [
+            r#"{"type":"session.started","payload":{"label":"Sofvary Agent"}}"#,
+            r#"{"type":"turn.started","payload":{"promptId":"prompt_worker"}}"#,
+            r#"{"type":"message.delta","payload":{"text":"hello "}}"#,
+            r#"{"type":"message.delta","payload":{"text":"world"}}"#,
+            r#"{"type":"tool.started","payload":{"callId":"call_1","toolName":"workspace_write"}}"#,
+            r#"{"type":"file.write.requested","payload":{"path":"generated/index.html"}}"#,
+            r#"{"type":"file.written","payload":{"path":"generated/index.html"}}"#,
+            r#"{"type":"status.changed","payload":{"status":"validating","summary":"Validating contract"}}"#,
+            r#"{"type":"turn.completed","payload":{"status":"ok"}}"#,
+        ] {
+            handle_pi_worker_stdout_line(
+                line,
+                "prompt_worker",
+                Some(&gateway_events),
+                &mut events,
+                None,
+                &mut text,
+                &mut pending_gateway_text,
+                &mut last_gateway_delta_flush,
+                &mut turn_completed,
+            )
+            .expect("worker event");
+        }
+
+        let gateway_event_types = captured_events
+            .lock()
+            .expect("events")
+            .iter()
+            .map(|event| event.event_type)
+            .collect::<Vec<_>>();
+
+        assert_eq!(text, "hello world");
+        assert!(turn_completed);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::FileWriteRequested { relative_path }
+                if relative_path == "generated/index.html"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::FileWritten { relative_path }
+                if relative_path == "generated/index.html"
+        )));
+        assert!(gateway_event_types.contains(&GatewayUniEventType::SessionStarted));
+        assert!(gateway_event_types.contains(&GatewayUniEventType::TurnStarted));
+        assert!(gateway_event_types.contains(&GatewayUniEventType::MessageDelta));
+        assert!(gateway_event_types.contains(&GatewayUniEventType::ToolStarted));
+        assert!(gateway_event_types.contains(&GatewayUniEventType::FileWriteRequested));
+        assert!(gateway_event_types.contains(&GatewayUniEventType::FileWritten));
+        assert!(gateway_event_types.contains(&GatewayUniEventType::StatusChanged));
+        assert!(gateway_event_types.contains(&GatewayUniEventType::TurnCompleted));
     }
 
     #[test]
@@ -1048,7 +1821,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("Pi RPC agent exited before output"));
+            .contains("Sofvary Agent RPC process exited before output"));
         assert!(error.to_string().contains("pi-rpc-boom"));
     }
 

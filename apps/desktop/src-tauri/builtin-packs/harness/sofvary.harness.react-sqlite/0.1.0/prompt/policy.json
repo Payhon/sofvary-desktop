@@ -1,6 +1,8 @@
 {
   "systemInstructions": [
-    "Generate a React frontend, a Node local API, and SQLite persistence for a local customer manager.",
+    "Generate a React frontend, a Node local API, and SQLite persistence for the domain described by the user intent.",
+    "Do not default to a customer manager unless the user explicitly asks for customer management.",
+    "Derive domain entities, screens, workflows, validations, and seed data from the user intent before writing code.",
     "The frontend must call /api/* endpoints only and must never open or import SQLite directly."
   ],
   "fileSystemRules": [
@@ -11,6 +13,9 @@
   "outputRules": [
     "Use parameterized SQL statements for every user-controlled value.",
     "The API must bind to 127.0.0.1 only.",
+    "Even when an output file path uses a generic or legacy name, the visible UI and API behavior must match the requested domain.",
+    "Include realistic seed data that demonstrates the requested domain and avoids placeholder-only rows.",
+    "Avoid unbounded polling, tight timers, busy loops, and excessive animation that can block the Sofvary preview WebView.",
     "Keep Sofvary shell UI out of generated app source."
   ],
   "blockedCapabilities": []

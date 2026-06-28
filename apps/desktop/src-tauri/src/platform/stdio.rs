@@ -149,14 +149,13 @@ impl StdioLineProcess {
         configure_process_tree_boundary(&mut command);
 
         let mut child = command.spawn()?;
-        if let Some(stdin_text) = stdin_text {
-            let mut stdin = child.stdin.take().ok_or_else(|| {
+        let stdin = if stdin_text.is_some() {
+            Some(child.stdin.take().ok_or_else(|| {
                 PlatformError::Unsupported("stdio line process stdin is unavailable".to_string())
-            })?;
-            stdin.write_all(stdin_text.as_bytes())?;
-            stdin.flush()?;
-            drop(stdin);
-        }
+            })?)
+        } else {
+            None
+        };
         let stdout = child.stdout.take().ok_or_else(|| {
             PlatformError::Unsupported("stdio line process stdout is unavailable".to_string())
         })?;
@@ -167,6 +166,9 @@ impl StdioLineProcess {
         let (line_tx, line_rx) = mpsc::channel();
         spawn_line_reader(stdout, line_tx.clone(), StdioLine::Stdout);
         spawn_line_reader(stderr, line_tx, StdioLine::Stderr);
+        if let (Some(stdin), Some(stdin_text)) = (stdin, stdin_text) {
+            spawn_stdin_writer(stdin, stdin_text.to_string());
+        }
 
         Ok(Self { child, line_rx })
     }
@@ -197,6 +199,13 @@ impl Drop for StdioLineProcess {
             self.kill();
         }
     }
+}
+
+fn spawn_stdin_writer(mut stdin: ChildStdin, stdin_text: String) {
+    thread::spawn(move || {
+        let _ = stdin.write_all(stdin_text.as_bytes());
+        let _ = stdin.flush();
+    });
 }
 
 fn spawn_line_reader<R>(

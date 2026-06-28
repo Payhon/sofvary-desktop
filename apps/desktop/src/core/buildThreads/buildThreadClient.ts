@@ -7,6 +7,7 @@ import type {
   HandoffActionResult,
   HandoffPromptCopyResult,
   HandoffRescanResult,
+  AgentTerminalOutputEvent,
   PolicyApprovalSet,
   RuntimeIntentSelection,
   RuntimeKind,
@@ -26,9 +27,10 @@ export async function startBuildThread(
   policyApprovals?: PolicyApprovalSet,
   agentId?: string | null,
   agentMode?: AgentInteractionMode | null,
+  llmProviderId?: string | null,
 ): Promise<BuildThreadSummary> {
   return safeInvoke<BuildThreadSummary>("start_build_thread", {
-    payload: { requirement, runtimeKind, mode, policyApprovals, agentId, agentMode },
+    payload: { requirement, runtimeKind, mode, policyApprovals, agentId, agentMode, llmProviderId },
   });
 }
 
@@ -93,6 +95,20 @@ export async function openHandoffAgent(
 ): Promise<HandoffActionResult> {
   return safeInvoke<HandoffActionResult>("open_handoff_agent", { threadId, policyApprovals });
 }
+
+export async function writeAgentTerminal(sessionId: string, data: string): Promise<void> {
+  return safeInvoke<void>("write_agent_terminal", { sessionId, data });
+}
+
+export async function resizeAgentTerminal(sessionId: string, rows: number, cols: number): Promise<void> {
+  return safeInvoke<void>("resize_agent_terminal", { sessionId, rows, cols });
+}
+
+export async function stopAgentTerminal(sessionId: string): Promise<void> {
+  return safeInvoke<void>("stop_agent_terminal", { sessionId });
+}
+
+export type { AgentTerminalOutputEvent };
 
 export async function rescanHandoffWorkspace(threadId: string): Promise<HandoffRescanResult> {
   return safeInvoke<HandoffRescanResult>("rescan_handoff_workspace", { threadId });

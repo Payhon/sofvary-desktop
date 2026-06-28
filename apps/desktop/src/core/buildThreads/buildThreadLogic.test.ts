@@ -607,6 +607,31 @@ test("getBuildOverlayViewModel hides raw terminal output in the main wait dialog
   assert.equal(model?.eventLabel, "stdout");
 });
 
+test("getBuildOverlayViewModel uses lightweight activity without raw entries", () => {
+  const model = getBuildOverlayViewModel(
+    "Building",
+    { ...baseThread, status: "building" },
+    null,
+    undefined,
+    {
+      threadId: baseThread.id,
+      timestamp: "2026-06-10T08:00:02Z",
+      agentId: "sofvary-agent",
+      transport: "pi-native",
+      eventType: "tool.delta",
+      phase: "tool",
+      safeSummary: "Tool output updated",
+      counts: { coalesced: 42, sequence: 42 },
+      latestWarning: null,
+      latestError: null,
+    },
+  );
+
+  assert.equal(model?.phase, "Running Agent tool");
+  assert.equal(model?.detail, "Tool output updated");
+  assert.equal(model?.eventLabel, "pi-native");
+});
+
 test("summarizeThreadEntryContent compacts and truncates long entries", () => {
   const entry = {
     id: "entry-a",

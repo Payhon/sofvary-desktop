@@ -1969,7 +1969,7 @@ impl RuntimeManager {
                 {
                     let transport =
                         if config.provider == crate::core::agent_config::AgentProvider::SofvaryPi {
-                            crate::core::agent_config::AgentTransportKind::PiRpc
+                            crate::core::agent_config::AgentTransportKind::PiNative
                         } else if config.acp.is_some() {
                             crate::core::agent_config::AgentTransportKind::Acp
                         } else {

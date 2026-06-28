@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 const DEFAULT_AGENT_TIMEOUT_MS: u64 = 180_000;
 const CODEX_AGENT_TIMEOUT_MS: u64 = 360_000;
-const PI_AGENT_TIMEOUT_MS: u64 = 180_000;
+const PI_AGENT_TIMEOUT_MS: u64 = 600_000;
 
 #[derive(Debug, Error)]
 pub enum AgentGatewayError {
@@ -596,12 +596,17 @@ impl ConfiguredAgentAdapter {
         envelope: &PromptEnvelope,
         context: &AgentRunContext,
     ) -> AgentGatewayResult<AgentAdapterOutput> {
-        let command = self.config.cli.as_ref().ok_or_else(|| {
-            AgentGatewayError::Adapter(format!("{} has no Pi RPC command", self.config.label))
-        })?;
-        self.enforce_external_agent_policy(command, AgentTransportKind::PiRpc)?;
+        let command = if std::env::var_os("SOFVARY_PI_RPC_FALLBACK").is_some() {
+            self.config.cli.as_ref()
+        } else {
+            None
+        };
+        if let Some(command) = command {
+            self.enforce_external_agent_policy(command, AgentTransportKind::PiRpc)?;
+        }
         let output = run_pi_agent(PiRunRequest {
             command,
+            pi_native_provider: self.config.pi_native_provider.as_ref(),
             workspace_root: &self.manifest.paths.root,
             staging_root: &staging_root_for_runtime(&self.manifest, envelope),
             envelope,
@@ -3725,6 +3730,7 @@ mod tests {
             allow_cli_fallback: true,
             default_interaction_mode: None,
             last_test: None,
+            pi_native_provider: None,
         };
 
         assert!(!cli_fallback_is_verified(&config));

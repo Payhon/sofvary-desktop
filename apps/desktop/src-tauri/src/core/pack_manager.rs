@@ -659,13 +659,16 @@ impl PackResolver {
             }
         }
 
-        let cached = match self.cache.read_manifest(kind, id, version) {
-            Ok(cached) => Some(cached),
-            Err(PackError::MissingPack { .. }) => None,
+        match self.cache.read_manifest(kind, id, version) {
+            Ok(cached) => return Ok(cached),
+            Err(PackError::MissingPack { .. }) => {}
+            Err(PackError::Json(cache_error)) => {
+                if let Some(builtin) = read_builtin_manifest(kind, id, version)? {
+                    return Ok(builtin);
+                }
+                return Err(PackError::Json(cache_error));
+            }
             Err(error) => return Err(error),
-        };
-        if let Some(cached) = cached {
-            return Ok(cached);
         }
 
         read_builtin_manifest(kind, id, version)?.ok_or_else(|| PackError::MissingPack {
@@ -946,9 +949,20 @@ fn append_pack_root_summaries(
                 }
                 match kind {
                     PackKind::Runtime => {
-                        if let Some(cached) = read_pack_manifest_from_root::<RuntimePackManifest>(
+                        let cached = match read_pack_manifest_from_root::<RuntimePackManifest>(
                             root, source, kind, &id, &version,
-                        )? {
+                        ) {
+                            Ok(cached) => cached,
+                            Err(error)
+                                if should_skip_stale_cached_builtin_manifest(
+                                    source, kind, &id, &version, &error,
+                                ) =>
+                            {
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        if let Some(cached) = cached {
                             validate_runtime_manifest_fields(&cached.manifest)?;
                             push_pack_summary(
                                 seen,
@@ -963,9 +977,20 @@ fn append_pack_root_summaries(
                         }
                     }
                     PackKind::Harness => {
-                        if let Some(cached) = read_pack_manifest_from_root::<HarnessPackManifest>(
+                        let cached = match read_pack_manifest_from_root::<HarnessPackManifest>(
                             root, source, kind, &id, &version,
-                        )? {
+                        ) {
+                            Ok(cached) => cached,
+                            Err(error)
+                                if should_skip_stale_cached_builtin_manifest(
+                                    source, kind, &id, &version, &error,
+                                ) =>
+                            {
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        if let Some(cached) = cached {
                             validate_harness_manifest_fields(&cached.manifest)?;
                             push_pack_summary(
                                 seen,
@@ -980,9 +1005,20 @@ fn append_pack_root_summaries(
                         }
                     }
                     PackKind::Plugin => {
-                        if let Some(cached) = read_pack_manifest_from_root::<PluginPackManifest>(
+                        let cached = match read_pack_manifest_from_root::<PluginPackManifest>(
                             root, source, kind, &id, &version,
-                        )? {
+                        ) {
+                            Ok(cached) => cached,
+                            Err(error)
+                                if should_skip_stale_cached_builtin_manifest(
+                                    source, kind, &id, &version, &error,
+                                ) =>
+                            {
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        if let Some(cached) = cached {
                             validate_plugin_manifest_fields(&cached.manifest)?;
                             push_pack_summary(
                                 seen,
@@ -1001,6 +1037,18 @@ fn append_pack_root_summaries(
         }
     }
     Ok(())
+}
+
+fn should_skip_stale_cached_builtin_manifest(
+    source: PackSource,
+    kind: PackKind,
+    id: &str,
+    version: &str,
+    error: &PackError,
+) -> bool {
+    source == PackSource::Cache
+        && matches!(error, PackError::Json(_))
+        && read_builtin_pack_resource(kind, id, version, MANIFEST_FILE_NAME).is_some()
 }
 
 fn push_pack_summary(
@@ -1989,6 +2037,41 @@ mod tests {
         assert_eq!(resolved.manifest.name, "Override Runtime");
         assert_eq!(resolved.source, PackSource::RuntimeOverride);
         assert_eq!(resolved.source_path.as_deref(), Some(pack_dir.as_path()));
+    }
+
+    #[test]
+    fn stale_cached_builtin_manifest_falls_back_to_compiled_builtin() {
+        let (_temp, manager) = temp_pack_manager();
+        let manifest = first_runtime_manifest();
+        let pack_dir = manager
+            .cache
+            .root()
+            .join(PackKind::Runtime.cache_dir_name())
+            .join(&manifest.id)
+            .join(&manifest.version);
+        fs::create_dir_all(&pack_dir).expect("pack dir");
+        let mut stale_manifest = serde_json::to_value(&manifest).expect("manifest value");
+        stale_manifest
+            .as_object_mut()
+            .expect("manifest object")
+            .remove("executor");
+        fs::write(
+            pack_dir.join(MANIFEST_FILE_NAME),
+            serde_json::to_vec_pretty(&stale_manifest).expect("manifest bytes"),
+        )
+        .expect("write stale manifest");
+
+        let resolved = manager
+            .resolver()
+            .resolve_runtime(&manifest.id, &manifest.version)
+            .expect("fallback runtime");
+        let catalog = manager.runtime_catalog_manifests().expect("catalog");
+
+        assert_eq!(resolved.source, PackSource::CompiledBuiltin);
+        assert_eq!(resolved.manifest.id, manifest.id);
+        assert!(catalog
+            .iter()
+            .any(|runtime| runtime.id == manifest.id && runtime.builtin));
     }
 
     #[test]

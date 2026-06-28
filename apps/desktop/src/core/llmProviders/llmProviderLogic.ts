@@ -129,6 +129,38 @@ export function getLlmProviderStatusLine(provider: LlmProviderConfig | null): st
   return provider.lastTest.ok ? "LLM 配置正常" : "LLM 配置失败";
 }
 
+export function llmProviderRequiresApiKey(kind: LlmProviderKind): boolean {
+  return getLlmProviderPreset(kind).apiKeyRequired;
+}
+
+export function isLlmProviderUsableForSofvaryAgent(provider: LlmProviderConfig): boolean {
+  if (!provider.enabled) return false;
+  if (!provider.model.trim()) return false;
+  if (!llmProviderRequiresApiKey(provider.kind)) return true;
+  return Boolean(provider.apiKeyRef || provider.lastTest?.ok);
+}
+
+export function getSelectableSofvaryAgentLlmProviders(
+  state: LlmProviderConfigState,
+): LlmProviderConfig[] {
+  return sortLlmProviders(state.providers, state.defaultProviderId).filter(
+    isLlmProviderUsableForSofvaryAgent,
+  );
+}
+
+export function getSelectedSofvaryAgentLlmProvider(
+  selectedProviderId: string | null | undefined,
+  state: LlmProviderConfigState,
+): LlmProviderConfig | null {
+  const providers = getSelectableSofvaryAgentLlmProviders(state);
+  if (selectedProviderId) {
+    const selected = providers.find((provider) => provider.providerId === selectedProviderId);
+    if (selected) return selected;
+  }
+  const defaultProvider = providers.find((provider) => provider.providerId === state.defaultProviderId);
+  return defaultProvider ?? providers[0] ?? null;
+}
+
 export function defaultLlmProviderConfig(): LlmProviderConfig {
   return createLlmProviderConfigFromPreset(llmProviderPresets[0]);
 }

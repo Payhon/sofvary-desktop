@@ -35,6 +35,7 @@ import {
   getDefaultAgentInteractionMode,
   getSelectableAgents,
   getSelectedAgentId,
+  isBuiltInSofvaryAgent,
   normalizeAgentInteractionMode,
 } from "../../core/agents/agentLogic";
 import {
@@ -64,6 +65,8 @@ import {
   rescanHandoffWorkspace,
   retryBuildThreadPreview,
   startBuildThread,
+  stopAgentTerminal,
+  writeAgentTerminal,
 } from "../../core/buildThreads/buildThreadClient";
 import {
   BuildThreadEventBatcher,
@@ -129,6 +132,7 @@ import {
 import {
   getDefaultLlmProvider,
   getLlmProviderStatusLine,
+  getSelectedSofvaryAgentLlmProvider,
 } from "../../core/llmProviders/llmProviderLogic";
 import {
   getRuntimeEnvironmentStatuses,
@@ -152,6 +156,7 @@ import {
   previewWorkspace,
   renameWorkspace,
 } from "../../core/workspace/workspaceClient";
+import { buildWorkspacePreviewPolicyPayload } from "../../core/workspace/workspaceLogic";
 import { hideCommandWindow, minimizeCommandWindow, showMainWindow } from "../../platform/shellClient";
 import { emitShellEvent, listenShellEvent, type ShellEventName } from "../../platform/eventClient";
 import { useWindowDrag } from "../../platform/useWindowDrag";
@@ -162,6 +167,7 @@ import type {
   AgentConfigState,
   AgentInteractionMode,
   AgentInstallStatus,
+  AgentTerminalOutputEvent,
   AppReleaseCapability,
   AppReleaseTargetPlatform,
   BuildThreadDetail,
@@ -201,6 +207,11 @@ interface PolicyDialogState {
   reject: (error: Error) => void;
 }
 
+interface AgentTerminalSessionState {
+  sessionId: string | null;
+  output: string;
+}
+
 export function CommandWindowRoot() {
   const { t } = useDesktopLocale();
   const [shellState, setShellState] = useState<ShellState>("CommandMenuVisible");
@@ -231,9 +242,13 @@ export function CommandWindowRoot() {
   const [buildThreads, setBuildThreads] = useState<BuildThreadSummary[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [activeThreadDetail, setActiveThreadDetail] = useState<BuildThreadDetail | null>(null);
+  const [terminalSessions, setTerminalSessions] = useState<Record<string, AgentTerminalSessionState>>({});
   const buildThreadsRef = useRef<BuildThreadSummary[]>([]);
   const activeThreadIdRef = useRef<string | null>(null);
   const activeThreadDetailRef = useRef<BuildThreadDetail | null>(null);
+  const stoppedTerminalSessionIdsRef = useRef<Set<string>>(new Set());
+  const terminalOutputBufferRef = useRef<Record<string, AgentTerminalOutputEvent>>({});
+  const terminalOutputFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [discoveredAgents, setDiscoveredAgents] = useState<DiscoveredAgent[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [selectedAgentMode, setSelectedAgentMode] = useState<AgentInteractionMode>("pi-native");
@@ -253,6 +268,7 @@ export function CommandWindowRoot() {
     defaultProviderId: null,
     providers: [],
   });
+  const [selectedLlmProviderId, setSelectedLlmProviderId] = useState<string | null>(null);
   const [llmProviderStatusOverride, setLlmProviderStatusOverride] = useState<string | null>(null);
   const [packStatus, setPackStatus] = useState<PackStatusState>({ kind: "idle" });
   const [capsuleStatus, setCapsuleStatus] = useState<CapsuleStatusState>({ kind: "idle" });
@@ -384,12 +400,17 @@ export function CommandWindowRoot() {
     () => getDefaultLlmProvider(llmProviderState),
     [llmProviderState],
   );
+  const activeSofvaryAgentLlmProvider = useMemo(
+    () => getSelectedSofvaryAgentLlmProvider(selectedLlmProviderId, llmProviderState),
+    [llmProviderState, selectedLlmProviderId],
+  );
   const llmProviderStatusLine =
     llmProviderStatusOverride ?? getLlmProviderStatusLine(defaultLlmProvider);
   const activeThread = useMemo(
     () => buildThreads.find((thread) => thread.id === activeThreadId) ?? null,
     [activeThreadId, buildThreads],
   );
+  const activeTerminalSession = activeThread ? (terminalSessions[activeThread.id] ?? null) : null;
   const statusLine = useMemo(() => {
     if (runtimePreflightMessage) return runtimePreflightMessage;
     if (policyDialog) return t("permission.title");
@@ -519,6 +540,47 @@ export function CommandWindowRoot() {
       });
   }, []);
 
+  const flushTerminalOutputBuffer = useCallback(() => {
+    if (terminalOutputFlushTimerRef.current) {
+      clearTimeout(terminalOutputFlushTimerRef.current);
+      terminalOutputFlushTimerRef.current = null;
+    }
+    const buffered = terminalOutputBufferRef.current;
+    terminalOutputBufferRef.current = {};
+    const events = Object.values(buffered);
+    if (events.length === 0) {
+      return;
+    }
+    setTerminalSessions((current) => {
+      let next = current;
+      for (const event of events) {
+        const previous = next[event.threadId];
+        const output =
+          previous?.sessionId === event.sessionId ? `${previous.output}${event.text}` : event.text;
+        const trimmedOutput = output.length > 80_000 ? output.slice(output.length - 80_000) : output;
+        next = {
+          ...next,
+          [event.threadId]: {
+            sessionId: event.sessionId,
+            output: trimmedOutput,
+          },
+        };
+      }
+      return next;
+    });
+  }, []);
+
+  const bufferTerminalOutput = useCallback((event: AgentTerminalOutputEvent) => {
+    const key = `${event.threadId}:${event.sessionId}`;
+    const previous = terminalOutputBufferRef.current[key];
+    terminalOutputBufferRef.current[key] = previous
+      ? { ...event, text: `${previous.text}${event.text}` }
+      : event;
+    if (!terminalOutputFlushTimerRef.current) {
+      terminalOutputFlushTimerRef.current = setTimeout(flushTerminalOutputBuffer, 160);
+    }
+  }, [flushTerminalOutputBuffer]);
+
   const applyThreadBatch = useCallback((batch: BuildThreadEventBatch) => {
     const next = applyBuildThreadEventBatch(
       {
@@ -547,6 +609,28 @@ export function CommandWindowRoot() {
 
   useEffect(() => {
     activeThreadDetailRef.current = activeThreadDetail;
+  }, [activeThreadDetail]);
+
+  useEffect(() => {
+    const threadId = activeThreadDetail?.summary.id;
+    if (!threadId) return;
+    const terminalSessionId = [...activeThreadDetail.entries]
+      .reverse()
+      .map((entry) =>
+        typeof entry.metadata?.terminalSessionId === "string" ? entry.metadata.terminalSessionId : null,
+      )
+      .find((sessionId): sessionId is string => Boolean(sessionId));
+    if (!terminalSessionId || stoppedTerminalSessionIdsRef.current.has(terminalSessionId)) return;
+    setTerminalSessions((current) => {
+      if (current[threadId]?.sessionId === terminalSessionId) return current;
+      return {
+        ...current,
+        [threadId]: {
+          sessionId: terminalSessionId,
+          output: current[threadId]?.output ?? "",
+        },
+      };
+    });
   }, [activeThreadDetail]);
 
   useEffect(() => {
@@ -590,6 +674,9 @@ export function CommandWindowRoot() {
       }),
       listenShellEvent<BuildThreadEntry>("sofvary-build-thread-entry", (entry) => {
         batcher.pushEntry(entry);
+      }),
+      listenShellEvent<AgentTerminalOutputEvent>("sofvary-agent-terminal-output", (event) => {
+        bufferTerminalOutput(event);
       }),
       listenShellEvent<RuntimePreview>("sofvary-runtime-preview", (preview) => {
         setPromptEnvelopeSummary(preview.promptEnvelopeSummary);
@@ -635,10 +722,13 @@ export function CommandWindowRoot() {
 
     return () => {
       batcher.dispose();
+      flushTerminalOutputBuffer();
       void Promise.all(unlisteners).then((listeners) => listeners.forEach((unlisten) => unlisten()));
     };
   }, [
     applyThreadBatch,
+    bufferTerminalOutput,
+    flushTerminalOutputBuffer,
     refreshAgentInstalls,
     refreshAgents,
     refreshInstalledPacks,
@@ -878,7 +968,12 @@ export function CommandWindowRoot() {
     setCapsuleStatus({ kind: "previewing", targetName: workspace.name });
 
     try {
-      const preview = await previewWorkspace(workspace, "dev");
+      const linkedThread = getWorkspaceBuildThread(workspace, buildThreadsRef.current);
+      const policyApprovals = await requestPolicyApprovals(
+        buildWorkspacePreviewPolicyPayload(workspace, "dev", linkedThread?.agentId),
+        t("policy.dialog.runRuntime", { runtimeKind: workspace.mode }),
+      );
+      const preview = await previewWorkspace(workspace, "dev", policyApprovals);
       setPromptEnvelopeSummary(preview.promptEnvelopeSummary);
       setCapsuleStatus({ kind: "success", detail: `${workspace.name} 已打开预览。` });
       await showMainWindow().catch(() => {
@@ -890,6 +985,10 @@ export function CommandWindowRoot() {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (message === POLICY_APPROVAL_CANCELED) {
+        setCapsuleStatus({ kind: "canceled", detail: "Preview canceled before runtime start." });
+        return;
+      }
       setCapsuleStatus({ kind: "error", detail: message });
       emitShellEventSafely("sofvary-runtime-error", message);
     } finally {
@@ -1495,6 +1594,13 @@ export function CommandWindowRoot() {
       if (!agentId) {
         throw new Error(t("agent.error.noEnabledAgent"));
       }
+      const selectedAgent = agentState.agents.find((agent) => agent.id === agentId) ?? null;
+      const llmProviderId = isBuiltInSofvaryAgent(selectedAgent)
+        ? activeSofvaryAgentLlmProvider?.providerId ?? null
+        : null;
+      if (isBuiltInSofvaryAgent(selectedAgent) && !llmProviderId) {
+        throw new Error(t("llm.requiredForSofvaryAgent"));
+      }
       const selectedRuntime =
         runtimeChoice === "auto" ? await analyzeBuildIntent(createPrompt) : null;
       if (selectedRuntime) {
@@ -1528,6 +1634,7 @@ export function CommandWindowRoot() {
         policyApprovals,
         agentId,
         activeAgentMode,
+        llmProviderId,
       );
       setActiveThreadId(thread.id);
       setBuildThreads((current) => upsertBuildThreadSummary(current, thread));
@@ -1663,6 +1770,16 @@ export function CommandWindowRoot() {
         t("task.handoff.openAgent"),
       );
       const result = await openHandoffAgent(activeThread.id, policyApprovals);
+      if (result.terminalSessionId) {
+        const terminalSessionId = result.terminalSessionId;
+        setTerminalSessions((current) => ({
+          ...current,
+          [activeThread.id]: {
+            sessionId: terminalSessionId,
+            output: current[activeThread.id]?.output ?? "",
+          },
+        }));
+      }
       syncHandoffThread(result.thread);
       setAgentStatusOverride(t("task.handoff.openAgent"));
     } catch (error) {
@@ -1670,6 +1787,43 @@ export function CommandWindowRoot() {
       if (message !== POLICY_APPROVAL_CANCELED) {
         setAgentStatusOverride(message);
       }
+    }
+  };
+
+  const sendActiveTerminalInput = async (value: string) => {
+    if (!activeTerminalSession?.sessionId || !value) return;
+    try {
+      await writeAgentTerminal(activeTerminalSession.sessionId, value);
+    } catch (error) {
+      setAgentStatusOverride(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const sendActiveHandoffPromptToTerminal = async () => {
+    if (!activeThread || !activeTerminalSession?.sessionId) return;
+    try {
+      const result = await copyHandoffPrompt(activeThread.id);
+      await writeAgentTerminal(activeTerminalSession.sessionId, `${result.prompt.trimEnd()}\n`);
+      syncHandoffThread(result.thread);
+      setAgentStatusOverride(t("task.handoff.sendPromptToTerminal"));
+    } catch (error) {
+      setAgentStatusOverride(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const stopActiveTerminal = async () => {
+    if (!activeThread || !activeTerminalSession?.sessionId) return;
+    try {
+      await stopAgentTerminal(activeTerminalSession.sessionId);
+      stoppedTerminalSessionIdsRef.current.add(activeTerminalSession.sessionId);
+      setTerminalSessions((current) => {
+        const next = { ...current };
+        delete next[activeThread.id];
+        return next;
+      });
+      setAgentStatusOverride(t("task.terminal.stopped"));
+    } catch (error) {
+      setAgentStatusOverride(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -1924,11 +2078,16 @@ export function CommandWindowRoot() {
           buildThreads={buildThreads}
           activeThread={activeThread}
           activeThreadDetail={activeThreadDetail}
+          activeTerminalSessionId={activeTerminalSession?.sessionId ?? null}
+          activeTerminalOutput={activeTerminalSession?.output ?? ""}
           promptEnvelopeSummary={promptEnvelopeSummary}
           workspaces={workspaces}
           installedPacks={installedPacks}
           llmProviderState={llmProviderState}
           llmProviderStatusLine={llmProviderStatusLine}
+          selectedLlmProviderId={
+            activeSofvaryAgentLlmProvider?.providerId ?? selectedLlmProviderId
+          }
           appearancePreferences={uiAppearance.preferences}
           themePreference={uiAppearance.preference}
           resolvedTheme={uiAppearance.resolvedTheme}
@@ -1976,6 +2135,9 @@ export function CommandWindowRoot() {
           onOpenHandoffAgent={() => void openActiveHandoffAgent()}
           onRescanHandoffWorkspace={() => void rescanActiveHandoffWorkspace()}
           onCopyHandoffRepairPrompt={() => void copyActiveHandoffRepairPrompt()}
+          onSendTerminalInput={(value) => void sendActiveTerminalInput(value)}
+          onSendHandoffPromptToTerminal={() => void sendActiveHandoffPromptToTerminal()}
+          onStopTerminal={() => void stopActiveTerminal()}
           onAddDiscoveredAgent={addDiscoveredAgent}
           onToggleAgentEnabled={toggleAgentEnabled}
           onSetDefaultAgent={makeDefaultAgent}
@@ -1999,6 +2161,7 @@ export function CommandWindowRoot() {
           onDeleteLlmProvider={(providerId) => void removeLlmProvider(providerId)}
           onTestLlmProvider={(providerId) => void testLlmProvider(providerId)}
           onRefreshLlmProviders={refreshLlmProviders}
+          onLlmProviderChange={setSelectedLlmProviderId}
           onAppearanceChange={uiAppearance.setPreferences}
           onThemePreferenceChange={uiAppearance.setThemePreference}
           onDeepLinkChange={updateDeepLinkValue}
